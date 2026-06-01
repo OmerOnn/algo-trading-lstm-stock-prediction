@@ -1,0 +1,83 @@
+# Main project configuration
+
+# Data universe. Start with large, liquid stocks so the data is cleaner.
+tickers:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - META
+  - GOOGL
+  - TSLA
+  - JPM
+  - UNH
+  - XOM
+
+benchmark_ticker: SPY
+
+start_date: "2015-01-01"
+end_date: null   # null means download until today
+
+# Supervised learning setup
+window_size: 60
+
+# The model can be trained for several horizons.
+# The UI will let the user choose one of these values.
+prediction_horizons:
+  - 5
+  - 10
+  - 20
+  - 30
+default_prediction_horizon: 10
+
+# Backward-compatible value. Used only if prediction_horizons is missing.
+prediction_horizon: 10
+
+buy_threshold: 0.03      # future return >= 3% => BUY
+sell_threshold: -0.03    # future return <= -3% => SELL
+
+# Hardware settings
+# auto = CUDA on NVIDIA, MPS on Apple Silicon Mac, otherwise CPU
+device: "auto"
+num_workers: 0
+pin_memory: true
+
+# Model settings
+# The project now uses LSTM by default, as requested.
+model_type: "lstm"       # "lstm" or "gru"
+hidden_size: 64
+num_layers: 1
+dropout: 0.35
+batch_size: 128
+learning_rate: 0.0003
+epochs: 50
+
+# Chronological split. Do not random-split time-series data.
+train_ratio: 0.70
+validation_ratio: 0.15   # test ratio is the remaining 0.15
+
+# Training improvements
+# Stop if validation loss does not improve for 7 straight epochs.
+early_stopping_patience: 7
+return_loss_weight: 0.5
+use_class_weights: true
+max_grad_norm: 1.0
+
+# Backtesting settings
+initial_cash: 10000
+transaction_cost_pct: 0.001    # 0.10% per trade
+slippage_pct: 0.0005           # 0.05% simulated slippage
+min_signal_confidence: 0.45    # ignore low-confidence model signals
+allow_short: false             # false = long / cash only, true = long / short / cash
+
+# Output paths.
+# Horizon-specific files are created automatically, for example:
+# models/stock_advanced_model_h10.pt
+# models/feature_scaler_h10.pkl
+# models/model_metadata_h10.json
+model_output_path: "models/stock_advanced_model.pt"
+scaler_output_path: "models/feature_scaler.pkl"
+metadata_output_path: "models/model_metadata.json"
+metrics_output_path: "reports/metrics.json"
+backtest_output_path: "reports/backtest_results.csv"
+plots_output_dir: "reports/plots"
