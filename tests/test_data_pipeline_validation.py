@@ -13,6 +13,7 @@ from src.features import (
     add_technical_indicators,
     get_feature_columns,
 )
+from src.data_download import preload_training_data
 from src.labeling import resolve_label_thresholds
 from src.pipeline import load_dataset_cache, save_dataset_cache
 
@@ -165,6 +166,24 @@ class DataPipelineValidationTest(unittest.TestCase):
 
         self.assertLess(buy_1, buy_21)
         self.assertGreater(sell_1, sell_21)
+
+    def test_preload_training_data_skips_unavailable_tickers_without_failing(self):
+        def fake_download_price_data(ticker, start, end):
+            if ticker == "BAD":
+                raise ValueError("No price data returned for ticker: BAD")
+            return make_ohlcv_frame(ticker=ticker)
+
+        with patch("src.data_download.download_price_data", side_effect=fake_download_price_data), patch(
+            "src.data_download.download_macro_data",
+            return_value=pd.DataFrame(),
+        ), patch("src.data_download.download_earnings_data", return_value=pd.DataFrame()):
+            preload_training_data(
+                tickers=["GOOD", "BAD"],
+                benchmark_ticker="SPY",
+                start="2018-01-01",
+                end=None,
+                macro_tickers={},
+            )
 
 
 if __name__ == "__main__":

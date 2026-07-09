@@ -180,10 +180,18 @@ def preload_training_data(
     print("Preloading shared market data into memory cache...")
     all_price_tickers = [benchmark_ticker, *tickers]
     for ticker in all_price_tickers:
-        download_price_data(ticker, start, end)
+        try:
+            download_price_data(ticker, start, end)
+        except Exception as exc:
+            print(f"Warning: preload skipped price data for {ticker}: {exc}")
     if macro_tickers:
-        download_macro_data(macro_tickers, start, end)
+        try:
+            download_macro_data(macro_tickers, start, end)
+        except Exception as exc:
+            print(f"Warning: preload skipped macro data: {exc}")
     for ticker in tickers:
-        download_earnings_data(ticker, limit=earnings_limit)
+        try:
+            download_earnings_data(ticker, limit=earnings_limit)
+        except Exception as exc:
+            print(f"Warning: preload skipped earnings data for {ticker}: {exc}")
     print("Shared market data cache is ready.")
-

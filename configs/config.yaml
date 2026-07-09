@@ -163,8 +163,8 @@ threshold_scaling:
   max_abs_threshold: 0.20
 
 # Hardware settings
-# mps = force Apple Silicon GPU through Metal on this Mac
-device: "mps"
+# auto = use Apple Metal GPU when available, otherwise fall back safely
+device: "auto"
 num_workers: 0
 pin_memory: true
 
