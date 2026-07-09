@@ -20,11 +20,24 @@ class TrainingWorkflowTest(unittest.TestCase):
         device_info = type(
             "DeviceInfoStub",
             (),
+<<<<<<< HEAD
             {"device": type("DeviceStub", (), {"type": "mps", "__str__": lambda self: "mps"})(), "device_name": "Apple Silicon GPU", "accelerator": "MPS / Apple Metal GPU"},
         )()
 
         with patch("train_all_models.load_config", return_value=config), patch(
             "train_all_models.get_best_device", return_value=device_info
+=======
+            {
+                "device": type("DeviceStub", (), {"type": "mps", "__str__": lambda self: "mps"})(),
+                "device_name": "Apple Silicon GPU",
+                "accelerator": "MPS / Apple Metal GPU",
+            },
+        )()
+
+        with patch("train_all_models.load_config", return_value=config), patch(
+            "train_all_models.get_best_device",
+            return_value=device_info,
+>>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
         ), patch(
             "train_all_models.resolve_xgboost_backend",
             return_value=("cpu", "Apple Metal GPU is not supported by XGBoost, so it is running on CPU."),
@@ -55,11 +68,24 @@ class TrainingWorkflowTest(unittest.TestCase):
         device_info = type(
             "DeviceInfoStub",
             (),
+<<<<<<< HEAD
             {"device": type("DeviceStub", (), {"type": "cpu", "__str__": lambda self: "cpu"})(), "device_name": "CPU", "accelerator": "CPU"},
         )()
 
         with patch("train_all_models.load_config", return_value=config), patch(
             "train_all_models.get_best_device", return_value=device_info
+=======
+            {
+                "device": type("DeviceStub", (), {"type": "cpu", "__str__": lambda self: "cpu"})(),
+                "device_name": "CPU",
+                "accelerator": "CPU",
+            },
+        )()
+
+        with patch("train_all_models.load_config", return_value=config), patch(
+            "train_all_models.get_best_device",
+            return_value=device_info,
+>>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
         ), patch(
             "train_all_models.resolve_xgboost_backend",
             return_value=("cuda", "CUDA GPU acceleration is active for XGBoost."),

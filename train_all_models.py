@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
-from train import get_horizons, load_config, train_models_for_horizons as train_lstm_models_for_horizons
-from src.device import get_best_device
 from src.data_download import preload_training_data
+from src.device import get_best_device
+from train import get_horizons, load_config, train_models_for_horizons as train_lstm_models_for_horizons
 from train_xgboost import resolve_xgboost_backend
 from train_xgboost import train_models_for_horizons as train_xgboost_models_for_horizons
 
@@ -50,6 +51,7 @@ def train_all_models(selected_horizon: int | None = None, compare: bool = False)
         print("LSTM training is running on CPU because no supported GPU backend was selected.")
     print(f"XGBoost backend: {xgb_device.upper()}")
     print(xgb_backend_message)
+
     preload_training_data(
         tickers=config["tickers"],
         benchmark_ticker=config["benchmark_ticker"],
@@ -64,7 +66,6 @@ def train_all_models(selected_horizon: int | None = None, compare: bool = False)
 
     if compare:
         from compare_results import main as compare_results_main
-        import sys
 
         for horizon in horizons:
             original_argv = sys.argv[:]

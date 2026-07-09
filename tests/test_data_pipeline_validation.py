@@ -13,7 +13,10 @@ from src.features import (
     add_technical_indicators,
     get_feature_columns,
 )
+<<<<<<< HEAD
 from src.data_download import preload_training_data
+=======
+>>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
 from src.labeling import resolve_label_thresholds
 from src.pipeline import load_dataset_cache, save_dataset_cache
 
@@ -166,6 +169,7 @@ class DataPipelineValidationTest(unittest.TestCase):
 
         self.assertLess(buy_1, buy_21)
         self.assertGreater(sell_1, sell_21)
+<<<<<<< HEAD
 
     def test_preload_training_data_skips_unavailable_tickers_without_failing(self):
         def fake_download_price_data(ticker, start, end):
@@ -184,6 +188,8 @@ class DataPipelineValidationTest(unittest.TestCase):
                 end=None,
                 macro_tickers={},
             )
+=======
+>>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
 
 
 if __name__ == "__main__":
