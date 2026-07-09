@@ -11,6 +11,7 @@ import torch
 import yaml
 
 from src.data_download import download_earnings_data, download_macro_data, download_price_data
+from src.decision import apply_class_thresholds
 from src.features import (
     ID_TO_CLASS,
     add_benchmark_features,
@@ -157,7 +158,12 @@ def predict_ticker_with_artifacts(
     with torch.no_grad():
         class_logits, predicted_return = model(x.to(device, non_blocking=(device.type == "cuda")))
         probabilities = torch.softmax(class_logits, dim=1).cpu().numpy()[0]
-        predicted_class_id = int(np.argmax(probabilities))
+        predicted_class_id = int(
+            apply_class_thresholds(
+                probabilities.reshape(1, -1),
+                metadata.get("decision_thresholds"),
+            )[0]
+        )
         predicted_signal = ID_TO_CLASS[predicted_class_id]
         raw_expected_return = float(predicted_return.cpu().numpy()[0])
 

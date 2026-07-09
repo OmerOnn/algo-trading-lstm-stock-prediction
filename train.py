@@ -19,13 +19,15 @@ import torch.nn as nn
 import yaml
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, mean_absolute_error
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from src.backtest import BacktestConfig, backtest_signals, build_signal_frame
 from src.baselines import add_sma_crossover_baseline, baseline_accuracy
+from src.decision import apply_class_thresholds, tune_class_thresholds
 from src.dataset import StockSequenceDataset
 from src.device import dataloader_device_kwargs, get_best_device, move_batch_to_device
 from src.features import ID_TO_CLASS
+from src.labeling import resolve_label_thresholds
 from src.model import StockSignalModel
 from src.pipeline import build_or_load_dataset_for_tickers
 from src.plots import plot_backtest_equity, plot_training_history
@@ -181,6 +183,18 @@ def make_class_weights(dataset: StockSequenceDataset, device: torch.device) -> t
     return torch.tensor(weights, dtype=torch.float32, device=device)
 
 
+def make_weighted_sampler(dataset: StockSequenceDataset) -> WeightedRandomSampler:
+    labels = np.asarray(dataset.y_class, dtype=np.int64)
+    counts = np.bincount(labels, minlength=3).astype(np.float64)
+    counts[counts == 0] = 1.0
+    sample_weights = 1.0 / counts[labels]
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -224,6 +238,7 @@ def evaluate(
     return_loss_fn: nn.Module,
     device: torch.device,
     return_loss_weight: float,
+    decision_thresholds: dict[str, float] | None = None,
 ) -> dict:
     model.eval()
 
@@ -259,6 +274,10 @@ def evaluate(
             all_pred_return.extend(predicted_return.cpu().numpy().tolist())
             all_probabilities.extend(list(probabilities))
 
+    all_probabilities_array = np.asarray(all_probabilities)
+    if decision_thresholds is not None:
+        all_pred_class = apply_class_thresholds(all_probabilities_array, decision_thresholds).tolist()
+
     accuracy = accuracy_score(all_true_class, all_pred_class)
     mae = mean_absolute_error(all_true_return, all_pred_return)
 
@@ -286,7 +305,7 @@ def evaluate(
         "predicted_class": np.asarray(all_pred_class),
         "true_return": np.asarray(all_true_return),
         "predicted_return": np.asarray(all_pred_return),
-        "probabilities": np.asarray(all_probabilities),
+        "probabilities": all_probabilities_array,
     }
 
 
@@ -307,6 +326,7 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
     print(f"Training LSTM model for {horizon} trading days ahead")
     print("=" * 72)
 
+    label_buy_threshold, label_sell_threshold = resolve_label_thresholds(config, horizon)
     processed_dir = ROOT / "data" / "processed"
     cache_dir = ROOT / "data" / "cache"
     report_dir = ROOT / "reports"
@@ -331,8 +351,8 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
         start_date=config["start_date"],
         end_date=config["end_date"],
         prediction_horizon=horizon,
-        buy_threshold=float(config["buy_threshold"]),
-        sell_threshold=float(config["sell_threshold"]),
+        buy_threshold=label_buy_threshold,
+        sell_threshold=label_sell_threshold,
         macro_tickers=config.get("macro_tickers"),
         cache_path=dataset_cache_path,
         use_cache=bool(config.get("use_dataset_cache", True)),
@@ -389,11 +409,18 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
     )
 
     print(f"Using device: {device} ({device_info.accelerator} - {device_info.device_name})")
+    print(
+        f"Label thresholds for h{horizon}: SELL <= {label_sell_threshold:.4f}, "
+        f"BUY >= {label_buy_threshold:.4f}"
+    )
+
+    sampler = make_weighted_sampler(train_dataset) if bool(config.get("use_weighted_sampler", True)) else None
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=int(config["batch_size"]),
-        shuffle=True,
+        shuffle=sampler is None,
+        sampler=sampler,
         **loader_kwargs,
     )
 
@@ -430,12 +457,17 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
         else None
     )
 
-    class_loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+    class_loss_fn = nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=float(config.get("label_smoothing", 0.0)),
+    )
     return_loss_fn = nn.SmoothL1Loss()
 
     best_validation_loss = np.inf
     epochs_without_improvement = 0
     history: list[dict] = []
+    decision_thresholds = {"sell": 0.5, "buy": 0.5}
+    best_decision_thresholds = dict(decision_thresholds)
 
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -460,6 +492,23 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
             return_loss_weight=float(config["return_loss_weight"]),
         )
 
+        tuned_thresholds = tune_class_thresholds(
+            validation_metrics["probabilities"],
+            validation_metrics["true_class"],
+            threshold_grid=[0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80],
+            minimum_action_rate=float(config.get("minimum_action_rate", 0.01)),
+        )
+        validation_metrics = evaluate(
+            model,
+            validation_loader,
+            class_loss_fn,
+            return_loss_fn,
+            device,
+            return_loss_weight=float(config["return_loss_weight"]),
+            decision_thresholds=tuned_thresholds,
+        )
+        decision_thresholds = tuned_thresholds
+
         row = {
             "horizon": horizon,
             "epoch": epoch,
@@ -467,6 +516,8 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
             "validation_loss": validation_metrics["loss"],
             "validation_accuracy": validation_metrics["accuracy"],
             "validation_return_mae": validation_metrics["return_mae"],
+            "sell_threshold": decision_thresholds["sell"],
+            "buy_threshold": decision_thresholds["buy"],
         }
 
         history.append(row)
@@ -476,12 +527,15 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
             f"Train Loss: {train_loss:.4f} | "
             f"Val Loss: {validation_metrics['loss']:.4f} | "
             f"Val Acc: {validation_metrics['accuracy']:.4f} | "
-            f"Val Return MAE: {validation_metrics['return_mae']:.4f}"
+            f"Val Return MAE: {validation_metrics['return_mae']:.4f} | "
+            f"Sell Thr: {decision_thresholds['sell']:.2f} | "
+            f"Buy Thr: {decision_thresholds['buy']:.2f}"
         )
 
         if validation_metrics["loss"] < best_validation_loss:
             best_validation_loss = validation_metrics["loss"]
             epochs_without_improvement = 0
+            best_decision_thresholds = dict(decision_thresholds)
             torch.save(model.state_dict(), model_path)
         else:
             epochs_without_improvement += 1
@@ -508,6 +562,7 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
         return_loss_fn,
         device,
         return_loss_weight=float(config["return_loss_weight"]),
+        decision_thresholds=best_decision_thresholds,
     )
 
     print("\nFinal test classification report:")
@@ -543,6 +598,8 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
     all_metrics = {
         "model_name": "LSTM",
         "prediction_horizon": horizon,
+        "resolved_buy_threshold": label_buy_threshold,
+        "resolved_sell_threshold": label_sell_threshold,
         "validation_best_loss": float(best_validation_loss),
         "train_size": len(train_dataset),
         "validation_size": len(validation_dataset),
@@ -553,6 +610,7 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
         "baseline_metrics": baselines,
         "backtest_metrics": backtest_metrics,
         "class_mapping": ID_TO_CLASS,
+        "decision_thresholds": best_decision_thresholds,
     }
 
     with open(metrics_path, "w", encoding="utf-8") as file:
@@ -567,6 +625,9 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
         "available_prediction_horizons": get_horizons(config),
         "buy_threshold": float(config["buy_threshold"]),
         "sell_threshold": float(config["sell_threshold"]),
+        "resolved_buy_threshold": label_buy_threshold,
+        "resolved_sell_threshold": label_sell_threshold,
+        "decision_thresholds": best_decision_thresholds,
         "model_type": str(config.get("model_type", "lstm")),
         "hidden_size": int(config["hidden_size"]),
         "num_layers": int(config["num_layers"]),
@@ -604,8 +665,12 @@ def main() -> None:
     config = load_config()
     set_seed(int(config.get("random_seed", 42)))
     args = parse_args()
+    train_models_for_horizons(config, get_horizons(config, args.horizon))
 
-    horizons = get_horizons(config, args.horizon)
+
+def train_models_for_horizons(config: dict, horizons: list[int]) -> None:
+    set_seed(int(config.get("random_seed", 42)))
+
     logs_dir = ROOT / "logs"
 
     with training_log_context(logs_dir, horizons) as log_path:

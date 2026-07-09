@@ -15,7 +15,9 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 
 from src.backtest import BacktestConfig, backtest_signals, build_signal_frame
 from src.baselines import add_sma_crossover_baseline, baseline_accuracy
+from src.decision import apply_class_thresholds, tune_class_thresholds
 from src.features import ID_TO_CLASS
+from src.labeling import resolve_label_thresholds
 from src.pipeline import build_or_load_dataset_for_tickers
 from src.plots import plot_backtest_equity
 from train import chronological_train_validation_test_split
@@ -66,13 +68,16 @@ def evaluate_xgboost(
     regressor: XGBRegressor,
     test_df: pd.DataFrame,
     feature_columns: list[str],
+    decision_thresholds: dict[str, float] | None = None,
 ) -> dict:
     x_test = test_df[feature_columns]
     y_class = test_df["signal_label"].astype(int).values
     y_return = test_df["future_return"].astype(float).values
 
-    predicted_class = classifier.predict(x_test)
     probabilities = classifier.predict_proba(x_test)
+    predicted_class = classifier.predict(x_test)
+    if decision_thresholds is not None:
+        predicted_class = apply_class_thresholds(probabilities, decision_thresholds)
     predicted_return = regressor.predict(x_test)
 
     accuracy = accuracy_score(y_class, predicted_class)
@@ -137,6 +142,8 @@ def resolve_xgboost_backend(config: dict) -> tuple[str, str]:
 
 
 def train_for_horizon(config: dict, horizon: int) -> None:
+    label_buy_threshold, label_sell_threshold = resolve_label_thresholds(config, horizon)
+
     if XGBClassifier is Any or XGBRegressor is Any:
         raise ModuleNotFoundError(
             "xgboost is not installed in this environment. Install dependencies before running XGBoost training."
@@ -148,6 +155,10 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     xgb_device, xgb_backend_message = resolve_xgboost_backend(config)
     print(f"Execution backend: {xgb_device.upper()}")
     print(xgb_backend_message)
+    print(
+        f"Label thresholds for h{horizon}: SELL <= {label_sell_threshold:.4f}, "
+        f"BUY >= {label_buy_threshold:.4f}"
+    )
 
     processed_dir = ROOT / "data" / "processed"
     cache_dir = ROOT / "data" / "cache"
@@ -168,8 +179,8 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         start_date=config["start_date"],
         end_date=config["end_date"],
         prediction_horizon=horizon,
-        buy_threshold=float(config["buy_threshold"]),
-        sell_threshold=float(config["sell_threshold"]),
+        buy_threshold=label_buy_threshold,
+        sell_threshold=label_sell_threshold,
         macro_tickers=config.get("macro_tickers"),
         cache_path=dataset_cache_path,
         use_cache=bool(config.get("use_dataset_cache", True)),
@@ -188,6 +199,13 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     x_train = train_df[feature_columns]
     y_train_class = train_df["signal_label"].astype(int)
     y_train_return = train_df["future_return"].astype(float)
+    class_counts = y_train_class.value_counts().to_dict()
+    class_weight_lookup = {
+        cls: float(len(y_train_class)) / float(3 * count)
+        for cls, count in class_counts.items()
+        if count > 0
+    }
+    classifier_sample_weight = y_train_class.map(lambda cls: class_weight_lookup.get(int(cls), 1.0)).astype(float)
 
     xgb_cfg = config.get("xgboost", {})
 
@@ -219,14 +237,28 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         device=xgb_device,
     )
 
-    classifier.fit(x_train, y_train_class)
+    classifier.fit(x_train, y_train_class, sample_weight=classifier_sample_weight)
     regressor.fit(x_train, y_train_return)
+
+    validation_metrics_raw = evaluate_xgboost(
+        classifier=classifier,
+        regressor=regressor,
+        test_df=validation_df,
+        feature_columns=feature_columns,
+    )
+    decision_thresholds = tune_class_thresholds(
+        validation_metrics_raw["probabilities"],
+        validation_metrics_raw["true_class"],
+        threshold_grid=[0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80],
+        minimum_action_rate=float(config.get("minimum_action_rate", 0.01)),
+    )
 
     test_metrics = evaluate_xgboost(
         classifier=classifier,
         regressor=regressor,
         test_df=test_df,
         feature_columns=feature_columns,
+        decision_thresholds=decision_thresholds,
     )
 
     print("\nFinal XGBoost test classification report:")
@@ -276,6 +308,8 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     all_metrics = {
         "model_name": "XGBoost",
         "prediction_horizon": horizon,
+        "resolved_buy_threshold": label_buy_threshold,
+        "resolved_sell_threshold": label_sell_threshold,
         "train_size": int(len(train_df)),
         "validation_size": int(len(validation_df)),
         "test_size": int(len(test_df)),
@@ -285,6 +319,7 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         "baseline_metrics": baselines,
         "backtest_metrics": backtest_metrics,
         "class_mapping": ID_TO_CLASS,
+        "decision_thresholds": decision_thresholds,
     }
 
     metrics_path = report_dir / f"metrics_xgboost_h{horizon}.json"
@@ -300,14 +335,18 @@ def train_for_horizon(config: dict, horizon: int) -> None:
 
 def main() -> None:
     config = load_config()
-    args = parse_args()
     set_seed(int(config.get("random_seed", 42)))
-
-    for horizon in get_horizons(config, args.horizon):
-        train_for_horizon(config, int(horizon))
+    args = parse_args()
+    train_models_for_horizons(config, get_horizons(config, args.horizon))
 
     print("\nXGBoost training finished.")
     print("Important: this project is for academic research and simulation only, not financial advice.")
+
+
+def train_models_for_horizons(config: dict, horizons: list[int]) -> None:
+    set_seed(int(config.get("random_seed", 42)))
+    for horizon in horizons:
+        train_for_horizon(config, int(horizon))
 
 
 if __name__ == "__main__":
