@@ -157,8 +157,8 @@ buy_threshold: 0.03      # future return >= 3% => BUY
 sell_threshold: -0.03    # future return <= -3% => SELL
 
 # Hardware settings
-# auto = CUDA on NVIDIA, MPS on Apple Silicon Mac, otherwise CPU
-device: "auto"
+# mps = force Apple Silicon GPU through Metal on this Mac
+device: "mps"
 num_workers: 0
 pin_memory: true
 
@@ -204,6 +204,7 @@ plots_output_dir: "reports/plots"
 
 # XGBoost settings - second model for model comparison
 xgboost:
+  device: auto
   n_estimators: 400
   max_depth: 4
   learning_rate: 0.03
