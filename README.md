@@ -1,33 +1,35 @@
 # Algo Trading Stock Predictor
 
-Academic deep-learning project for simulated stock signal prediction.
+Academic final project for Track 2, building a machine learning system that predicts stock movement and evaluates the result as a trading strategy.
 
-The project trains an LSTM-based model that predicts:
+The repo now contains two model families that share the same chronological data pipeline:
+
+1. LSTM multi-task model over 60-day sequential windows.
+2. XGBoost classifier/regressor over engineered tabular financial features.
+
+Both models predict:
 
 - `BUY`
 - `HOLD`
 - `SELL`
-- expected percentage movement
+- expected future return
 
-The model uses historical prices, technical indicators, volatility features, benchmark-market features, and earnings-related features.
+The feature set includes historical prices, technical indicators, benchmark market context, earnings features, and macro / alternative market data such as VIX, treasury yield proxy, and USD index.
 
 > This project is for academic research and simulation only. It is not financial advice.
 
 ---
 
-## Main changes in this version
+## Track 2 Coverage
 
-This version includes the requested fixes:
+The implementation is designed to satisfy the course requirements:
 
-1. The project uses **LSTM** by default.
-2. Training stops early if validation loss does not improve for **7 straight epochs**.
-3. The UI no longer shows the internal model type, GPU, CUDA, MPS, or device information to the user.
-4. The UI lets the user choose the prediction horizon using a bar/slider.
-5. The project supports several prediction horizons: `5`, `10`, `20`, and `30` trading days.
-6. The UI displays expected movement consistently with the selected signal.
-   - `BUY` is shown as positive movement.
-   - `SELL` is shown as negative movement.
-   - `HOLD` is shown as neutral/raw expected movement.
+- At least 3 years of historical market data.
+- Alternative / macro data joined to each asset.
+- Two model families for comparison.
+- EDA, training, inference, and evaluation.
+- Backtest metrics, including alpha-style comparison against buy-and-hold.
+- Clean repository outputs for demo and presentation use.
 
 ---
 
@@ -35,37 +37,52 @@ This version includes the requested fixes:
 
 ```text
 algo_trading_advanced_model/
-├── app.py
-├── train.py
-├── predict.py
-├── check_device.py
-├── compare_models.py
-├── evaluate_saved_model.py
-├── configs/
-│   └── config.yaml
-├── src/
-│   ├── backtest.py
-│   ├── baselines.py
-│   ├── data_download.py
-│   ├── dataset.py
-│   ├── device.py
-│   ├── features.py
-│   ├── model.py
-│   ├── pipeline.py
-│   └── plots.py
-├── models/
-├── reports/
-└── requirements.txt
+|-- app.py
+|-- train.py
+|-- train_xgboost.py
+|-- predict.py
+|-- check_device.py
+|-- compare_models.py
+|-- compare_results.py
+|-- evaluate_saved_model.py
+|-- configs/
+|   `-- config.yaml
+|-- docs/
+|   |-- demo_script.md
+|   `-- final_report.md
+|-- notebooks/
+|   `-- final_project_colab.ipynb
+|-- src/
+|   |-- backtest.py
+|   |-- baselines.py
+|   |-- data_download.py
+|   |-- dataset.py
+|   |-- device.py
+|   |-- features.py
+|   |-- model.py
+|   |-- pipeline.py
+|   `-- plots.py
+|-- models/
+|-- reports/
+`-- requirements.txt
 ```
 
 ---
 
-## Setup on Mac
+## Setup
 
 ```bash
 cd algo_trading_advanced_model
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
@@ -75,85 +92,83 @@ Check acceleration:
 python3 check_device.py
 ```
 
-On Apple Silicon Mac, it should show `mps`.
+Use `python` instead of `python3` on Windows if needed.
 
 ---
 
 ## Training
 
-### Train all configured horizons
+### Train the LSTM
 
-This trains separate LSTM models for all horizons in `configs/config.yaml`:
+This trains the LSTM model for the configured horizon set:
 
 ```bash
 python3 train.py
 ```
 
-By default, it trains models for:
-
-```text
-5, 10, 20, 30 trading days ahead
-```
-
-This creates files like:
-
-```text
-models/stock_advanced_model_h5.pt
-models/stock_advanced_model_h10.pt
-models/stock_advanced_model_h20.pt
-models/stock_advanced_model_h30.pt
-
-models/feature_scaler_h5.pkl
-models/feature_scaler_h10.pkl
-models/feature_scaler_h20.pkl
-models/feature_scaler_h30.pkl
-
-models/model_metadata_h5.json
-models/model_metadata_h10.json
-models/model_metadata_h20.json
-models/model_metadata_h30.json
-```
-
-### Train only one horizon
-
-For faster testing:
+To train one horizon only:
 
 ```bash
 python3 train.py --horizon 10
 ```
 
-or:
+### Train the XGBoost model
 
 ```bash
-python3 train.py --horizon 5
+python3 train_xgboost.py --horizon 10
+```
+
+### Run the full comparison
+
+```bash
+python3 compare_models.py --horizon 10
+```
+
+This runs:
+
+```bash
+python train.py --horizon 10
+python train_xgboost.py --horizon 10
+python compare_results.py --horizon 10
 ```
 
 ---
 
-## Early stopping
+## Outputs
 
-The model trains up to the maximum number of epochs:
+Training and evaluation create horizon-specific artifacts under `models/`, `reports/`, and `data/processed/`.
 
-```yaml
-epochs: 50
-```
-
-But it stops earlier if validation loss does not improve for 7 straight epochs:
-
-```yaml
-early_stopping_patience: 7
-```
-
-So training stops when either:
+Examples include:
 
 ```text
-1. It reaches the maximum number of epochs
-2. Validation loss does not improve for 7 consecutive epochs
+models/stock_advanced_model_h10.pt
+models/xgboost_classifier_h10.joblib
+models/xgboost_regressor_h10.joblib
+models/model_metadata_h10.json
+reports/metrics_h10.json
+reports/metrics_xgboost_h10.json
+reports/test_predictions_h10.csv
+reports/test_predictions_xgboost_h10.csv
+reports/backtest_results_h10.csv
+reports/backtest_results_xgboost_h10.csv
+reports/model_comparison_h10.csv
+reports/model_comparison_h10.md
 ```
 
 ---
 
-## Prediction from terminal
+## Backtesting Methodology
+
+The backtest is intentionally simple and transparent for academic use:
+
+- Each prediction is treated as one simulated trading decision.
+- Transaction costs and slippage are subtracted from active trades.
+- Performance is reported against buy-and-hold.
+- The report includes alpha-style excess return, drawdown, Sharpe, Sortino, win rate, and average trade return.
+
+---
+
+## Inference
 
 Single ticker:
 
@@ -194,6 +209,15 @@ In the UI, the user can:
 
 ---
 
+## Limitations
+
+- This is a research simulation, not a production trading system.
+- Yahoo Finance data can be delayed, incomplete, or unavailable for some tickers.
+- The backtest is not a substitute for live execution, order-book modeling, or risk management.
+- Model output can be unstable across horizons and market regimes.
+
+---
+
 ## Important note about horizons
 
 The UI can only predict a horizon after a model was trained for that horizon.
@@ -212,10 +236,10 @@ python3 train.py --horizon 20
 
 ---
 
-## Academic interpretation
+## Academic Disclaimer
 
-The dashboard should be described as a research simulation system, not as a real investment-advice system.
+The dashboard and reports should be described as a research simulation system, not as investment advice.
 
-A good project explanation:
+Suggested wording:
 
-> The system predicts simulated trading signals using sequential market data, technical indicators, volatility features, benchmark data, and earnings-related features. The output is evaluated academically using classification metrics and backtesting, and should not be interpreted as financial advice.
+> The system predicts simulated trading signals using historical price data, technical indicators, benchmark features, macro data, and earnings-related features. It is evaluated using classification metrics and backtesting for academic comparison only.

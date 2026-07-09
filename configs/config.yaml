@@ -15,8 +15,19 @@ tickers:
 
 benchmark_ticker: SPY
 
+# Alternative / macro market data.
+# These are added to satisfy the project requirement of using financial data
+# together with alternative / macro indicators.
+macro_tickers:
+  vix: "^VIX"
+  treasury_10y: "^TNX"
+  usd_index: "DX-Y.NYB"
+
+
 start_date: "2015-01-01"
 end_date: null   # null means download until today
+
+random_seed: 42
 
 # Supervised learning setup
 window_size: 60
@@ -81,3 +92,12 @@ metadata_output_path: "models/model_metadata.json"
 metrics_output_path: "reports/metrics.json"
 backtest_output_path: "reports/backtest_results.csv"
 plots_output_dir: "reports/plots"
+
+# XGBoost settings - second model for model comparison
+xgboost:
+  n_estimators: 400
+  max_depth: 4
+  learning_rate: 0.03
+  subsample: 0.8
+  colsample_bytree: 0.8
+  random_state: 42

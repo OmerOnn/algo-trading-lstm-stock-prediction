@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Print saved model evaluation summary.")
+    parser.add_argument("--horizon", type=int, default=10)
+    parser.add_argument("--model", type=str, default="lstm", choices=["lstm", "xgboost"])
+    return parser.parse_args()
 
 
 def load_json(path: Path) -> dict:
@@ -15,23 +22,28 @@ def load_json(path: Path) -> dict:
         return json.load(file)
 
 
-def load_config(path: str = "configs/config.yaml") -> dict:
-    with open(ROOT / path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
-
-
 def main() -> None:
-    config = load_config()
-    metrics_path = ROOT / config["metrics_output_path"]
-    backtest_path = ROOT / config["backtest_output_path"]
-    predictions_path = ROOT / "reports" / "test_predictions.csv"
+    args = parse_args()
+    horizon = int(args.horizon)
+
+    if args.model == "lstm":
+        metrics_path = ROOT / "reports" / f"metrics_h{horizon}.json"
+        backtest_path = ROOT / "reports" / f"backtest_results_h{horizon}.csv"
+        predictions_path = ROOT / "reports" / f"test_predictions_h{horizon}.csv"
+    else:
+        metrics_path = ROOT / "reports" / f"metrics_xgboost_h{horizon}.json"
+        backtest_path = ROOT / "reports" / f"backtest_results_xgboost_h{horizon}.csv"
+        predictions_path = ROOT / "reports" / f"test_predictions_xgboost_h{horizon}.csv"
 
     if not metrics_path.exists():
-        raise FileNotFoundError("Run python train.py first. metrics.json was not found.")
+        raise FileNotFoundError(f"Metrics file was not found: {metrics_path}")
 
     metrics = load_json(metrics_path)
+
     print("\nModel Evaluation Summary")
     print("========================")
+    print(f"Model: {metrics.get('model_name', args.model)}")
+    print(f"Horizon: {metrics['prediction_horizon']} trading days")
     print(f"Test accuracy: {metrics['test_metrics']['accuracy']:.4f}")
     print(f"Test return MAE: {metrics['test_metrics']['return_mae']:.4f}")
     print(f"Majority baseline accuracy: {metrics['baseline_metrics']['majority_class_accuracy']:.4f}")
@@ -43,8 +55,10 @@ def main() -> None:
     print(f"Final equity: ${bt['final_equity']:.2f}")
     print(f"Total return: {bt['total_return'] * 100:.2f}%")
     print(f"Buy-and-hold comparison: {bt['buy_and_hold_total_return'] * 100:.2f}%")
+    print(f"Excess return vs buy-and-hold: {bt.get('excess_return_vs_buy_hold', 0.0) * 100:.2f}%")
     print(f"Max drawdown: {bt['max_drawdown'] * 100:.2f}%")
     print(f"Sharpe ratio: {bt['sharpe_ratio']:.4f}")
+    print(f"Win rate: {bt.get('win_rate', 0.0) * 100:.2f}%")
     print(f"Active trades: {bt['number_of_active_trades']}")
     print(f"Trade activation rate: {bt['trade_activation_rate'] * 100:.2f}%")
 
@@ -56,6 +70,7 @@ def main() -> None:
 
     if backtest_path.exists():
         print(f"\nDetailed backtest file: {backtest_path}")
+
     print("Important: this is an academic simulation only, not financial advice.")
 
 

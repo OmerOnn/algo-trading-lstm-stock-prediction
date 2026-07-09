@@ -10,12 +10,12 @@ import pandas as pd
 import torch
 import yaml
 
-from src.data_download import download_earnings_data, download_price_data
+from src.data_download import download_earnings_data, download_macro_data, download_price_data
 from src.features import (
     ID_TO_CLASS,
     add_benchmark_features,
     add_earnings_features,
-    add_labels,
+    add_macro_features,
     add_technical_indicators,
 )
 from src.device import get_best_device
@@ -67,20 +67,17 @@ def resolve_artifact_paths(config: dict, horizon: int) -> tuple[Path, Path, Path
 def build_latest_features(ticker: str, config: dict, feature_columns: list[str], horizon: int) -> pd.DataFrame:
     price_df = download_price_data(ticker, config["start_date"], config["end_date"])
     benchmark_df = download_price_data(config["benchmark_ticker"], config["start_date"], config["end_date"])
+    macro_df = pd.DataFrame()
+    if config.get("macro_tickers"):
+        macro_df = download_macro_data(config["macro_tickers"], config["start_date"], config["end_date"])
+
     earnings_df = download_earnings_data(ticker)
 
     df = add_technical_indicators(price_df)
     df = add_benchmark_features(df, benchmark_df)
+    df = add_macro_features(df, macro_df)
     df = add_earnings_features(df, earnings_df)
-
-    # Labels are not used for inference, but this keeps columns consistent if needed.
-    df = add_labels(
-        df,
-        horizon=horizon,
-        buy_threshold=float(config["buy_threshold"]),
-        sell_threshold=float(config["sell_threshold"]),
-    )
-
+    
     df.replace([float("inf"), float("-inf")], pd.NA, inplace=True)
     df = df.dropna(subset=feature_columns).copy()
     return df
