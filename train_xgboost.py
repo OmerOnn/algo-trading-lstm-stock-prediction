@@ -4,13 +4,14 @@ import argparse
 import json
 import random
 from pathlib import Path
+from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
+import torch
 import yaml
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, mean_absolute_error
-from xgboost import XGBClassifier, XGBRegressor
 
 from src.backtest import BacktestConfig, backtest_signals, build_signal_frame
 from src.baselines import add_sma_crossover_baseline, baseline_accuracy
@@ -21,6 +22,12 @@ from train import chronological_train_validation_test_split
 
 
 ROOT = Path(__file__).resolve().parent
+
+try:
+    from xgboost import XGBClassifier, XGBRegressor
+except ModuleNotFoundError:
+    XGBClassifier = Any
+    XGBRegressor = Any
 
 
 def load_config(path: str = "configs/config.yaml") -> dict:
@@ -105,10 +112,42 @@ def strip_arrays(metrics: dict) -> dict:
     return {key: value for key, value in metrics.items() if key not in skipped}
 
 
+def resolve_xgboost_backend(config: dict) -> tuple[str, str]:
+    requested = str(config.get("xgboost", {}).get("device", "auto")).lower().strip()
+    aliases = {"gpu": "cuda", "metal": "mps", "mac": "mps", "apple": "mps"}
+    requested = aliases.get(requested, requested)
+
+    if requested == "cuda":
+        if torch.cuda.is_available():
+            return "cuda", "CUDA GPU acceleration is active for XGBoost."
+        raise RuntimeError("XGBoost CUDA was requested, but no CUDA-capable NVIDIA GPU is available.")
+
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return "cuda", "CUDA GPU acceleration is active for XGBoost."
+        return "cpu", "No CUDA-capable NVIDIA GPU detected, so XGBoost is running on CPU."
+
+    if requested == "mps":
+        return "cpu", "Apple Metal GPU is not supported by XGBoost, so it is running on CPU."
+
+    if requested == "cpu":
+        return "cpu", "XGBoost is configured to run on CPU."
+
+    raise ValueError("Invalid XGBoost device. Use one of: auto, cuda, gpu, cpu, mps, metal, mac, apple")
+
+
 def train_for_horizon(config: dict, horizon: int) -> None:
+    if XGBClassifier is Any or XGBRegressor is Any:
+        raise ModuleNotFoundError(
+            "xgboost is not installed in this environment. Install dependencies before running XGBoost training."
+        )
+
     print("\n" + "=" * 72)
     print(f"Training XGBoost model for {horizon} trading days ahead")
     print("=" * 72)
+    xgb_device, xgb_backend_message = resolve_xgboost_backend(config)
+    print(f"Execution backend: {xgb_device.upper()}")
+    print(xgb_backend_message)
 
     processed_dir = ROOT / "data" / "processed"
     cache_dir = ROOT / "data" / "cache"
@@ -163,6 +202,8 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         colsample_bytree=float(xgb_cfg.get("colsample_bytree", 0.8)),
         random_state=int(xgb_cfg.get("random_state", config.get("random_seed", 42))),
         n_jobs=-1,
+        tree_method="hist",
+        device=xgb_device,
     )
 
     regressor = XGBRegressor(
@@ -174,6 +215,8 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         colsample_bytree=float(xgb_cfg.get("colsample_bytree", 0.8)),
         random_state=int(xgb_cfg.get("random_state", config.get("random_seed", 42))),
         n_jobs=-1,
+        tree_method="hist",
+        device=xgb_device,
     )
 
     classifier.fit(x_train, y_train_class)
