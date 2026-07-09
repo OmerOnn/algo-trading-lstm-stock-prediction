@@ -80,7 +80,7 @@ def build_latest_features(ticker: str, config: dict, feature_columns: list[str],
     df = add_macro_features(df, macro_df)
     df = add_earnings_features(df, earnings_df)
     
-    df.replace([float("inf"), float("-inf")], pd.NA, inplace=True)
+    df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=feature_columns).copy()
     return df
 
