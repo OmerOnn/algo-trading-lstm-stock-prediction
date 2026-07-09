@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import warnings
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,9 @@ import pandas as pd
 
 
 REQUIRED_PRICE_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+_PRICE_CACHE: dict[tuple[str, str, str | None], pd.DataFrame] = {}
+_MACRO_CACHE: dict[tuple[tuple[tuple[str, str], ...], str, str | None], pd.DataFrame] = {}
+_EARNINGS_CACHE: dict[tuple[str, int], pd.DataFrame] = {}
 
 
 def _configure_download_environment() -> None:
@@ -40,6 +44,10 @@ import yfinance as yf
 
 def download_price_data(ticker: str, start: str, end: Optional[str] = None) -> pd.DataFrame:
     """Download daily OHLCV data for one ticker from Yahoo Finance through yfinance."""
+    cache_key = (str(ticker), str(start), str(end) if end is not None else None)
+    if cache_key in _PRICE_CACHE:
+        return _PRICE_CACHE[cache_key].copy(deep=True)
+
     try:
         df = yf.download(
             ticker,
@@ -69,7 +77,8 @@ def download_price_data(ticker: str, start: str, end: Optional[str] = None) -> p
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
     df["Ticker"] = ticker
-    return df
+    _PRICE_CACHE[cache_key] = df.copy(deep=True)
+    return df.copy(deep=True)
 
 
 def download_macro_data(
@@ -85,6 +94,14 @@ def download_macro_data(
         items = list(macro_tickers.items())
     else:
         items = list(macro_tickers)
+
+    cache_key = (
+        tuple((str(name), str(ticker)) for name, ticker in items),
+        str(start),
+        str(end) if end is not None else None,
+    )
+    if cache_key in _MACRO_CACHE:
+        return _MACRO_CACHE[cache_key].copy(deep=True)
 
     frames: list[pd.DataFrame] = []
     for name, ticker in items:
@@ -108,7 +125,9 @@ def download_macro_data(
 
     macro_df = pd.concat(frames, axis=1).sort_index()
     macro_df = macro_df.replace([np.inf, -np.inf], np.nan)
-    return macro_df.ffill()
+    macro_df = macro_df.ffill()
+    _MACRO_CACHE[cache_key] = macro_df.copy(deep=True)
+    return macro_df.copy(deep=True)
 
 
 def download_earnings_data(ticker: str, limit: int = 100) -> pd.DataFrame:
@@ -118,6 +137,10 @@ def download_earnings_data(ticker: str, limit: int = 100) -> pd.DataFrame:
     Note: yfinance earnings data availability can vary by ticker and by time.
     The rest of the project handles missing earnings data safely.
     """
+    cache_key = (str(ticker), int(limit))
+    if cache_key in _EARNINGS_CACHE:
+        return _EARNINGS_CACHE[cache_key].copy(deep=True)
+
     try:
         stock = yf.Ticker(ticker)
         with warnings.catch_warnings():
@@ -127,7 +150,9 @@ def download_earnings_data(ticker: str, limit: int = 100) -> pd.DataFrame:
         earnings = None
 
     if earnings is None or len(earnings) == 0:
-        return pd.DataFrame(columns=["Earnings Date", "EPS Estimate", "Reported EPS", "Surprise(%)"])
+        empty = pd.DataFrame(columns=["Earnings Date", "EPS Estimate", "Reported EPS", "Surprise(%)"])
+        _EARNINGS_CACHE[cache_key] = empty.copy(deep=True)
+        return empty.copy(deep=True)
 
     earnings = earnings.reset_index()
 
@@ -139,6 +164,26 @@ def download_earnings_data(ticker: str, limit: int = 100) -> pd.DataFrame:
     earnings.dropna(subset=["Earnings Date"], inplace=True)
     earnings.sort_values("Earnings Date", inplace=True)
     earnings["Ticker"] = ticker
-    return earnings
+    _EARNINGS_CACHE[cache_key] = earnings.copy(deep=True)
+    return earnings.copy(deep=True)
 
+
+def preload_training_data(
+    tickers: list[str],
+    benchmark_ticker: str,
+    start: str,
+    end: Optional[str] = None,
+    macro_tickers: dict[str, str] | list[tuple[str, str]] | None = None,
+    earnings_limit: int = 100,
+) -> None:
+    """Preload shared raw datasets once so repeated model/horizon training reuses them in memory."""
+    print("Preloading shared market data into memory cache...")
+    all_price_tickers = [benchmark_ticker, *tickers]
+    for ticker in all_price_tickers:
+        download_price_data(ticker, start, end)
+    if macro_tickers:
+        download_macro_data(macro_tickers, start, end)
+    for ticker in tickers:
+        download_earnings_data(ticker, limit=earnings_limit)
+    print("Shared market data cache is ready.")
 

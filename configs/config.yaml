@@ -155,6 +155,12 @@ prediction_horizon: 21
 
 buy_threshold: 0.03      # future return >= 3% => BUY
 sell_threshold: -0.03    # future return <= -3% => SELL
+threshold_scaling:
+  enabled: true
+  mode: "sqrt_horizon"
+  reference_horizon: 21
+  min_abs_threshold: 0.005
+  max_abs_threshold: 0.20
 
 # Hardware settings
 # mps = force Apple Silicon GPU through Metal on this Mac
@@ -181,7 +187,10 @@ validation_ratio: 0.15   # test ratio is the remaining 0.15
 early_stopping_patience: 7
 return_loss_weight: 0.5
 use_class_weights: true
+use_weighted_sampler: true
+label_smoothing: 0.02
 max_grad_norm: 1.0
+minimum_action_rate: 0.01
 
 # Backtesting settings
 initial_cash: 10000
