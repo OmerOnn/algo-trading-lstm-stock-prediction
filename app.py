@@ -18,6 +18,24 @@ from predict import (  # noqa: E402
 )
 
 
+HORIZON_LABELS = {
+    1: "1 day",
+    5: "1 week",
+    21: "1 month",
+    126: "6 months",
+    252: "1 year",
+    1260: "5 years",
+    2520: "10 years",
+}
+
+
+def format_horizon(horizon: int) -> str:
+    label = HORIZON_LABELS.get(int(horizon))
+    if label:
+        return f"{label} ({horizon} trading days)"
+    return f"{horizon} trading days"
+
+
 SIGNAL_STYLE = {
     "BUY": {
         "emoji": "📈",
@@ -315,10 +333,10 @@ def main() -> None:
             "Prediction horizon",
             options=available_horizons,
             value=available_horizons[default_index],
-            format_func=lambda x: f"{x} trading days",
+            format_func=format_horizon,
         )
         st.metric("Input Window", f"{config['window_size']} days")
-        st.metric("Selected Horizon", f"{selected_horizon} days")
+        st.metric("Selected Horizon", format_horizon(int(selected_horizon)))
         st.divider()
         st.markdown("**Important**")
         st.markdown("This dashboard is for academic research and simulation only. It is not financial advice.")
@@ -354,7 +372,7 @@ def main() -> None:
     st.markdown(
         f"""
         <div class="info-box">
-            The model will predict {selected_horizon} trading days ahead using the latest available market data.
+            The model will predict {format_horizon(int(selected_horizon))} ahead using the latest available market data.
         </div>
         """,
         unsafe_allow_html=True,

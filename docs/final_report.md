@@ -47,7 +47,22 @@ A tabular model trained on the same chronological split and feature set.
 Each prediction is treated as a simulated trade. Transaction costs and slippage are deducted from active positions. The backtest is compared with buy-and-hold to estimate alpha after costs.
 
 ## Results Summary
-Add horizon-specific results here after running the training scripts.
+For the 10-trading-day horizon run, both models used 58 engineered features and the same chronological data-building pipeline.
+
+| Metric | LSTM | XGBoost |
+| --- | ---: | ---: |
+| Accuracy | 0.2980 | 0.3259 |
+| Return MAE | 0.0568 | 0.0664 |
+| Strategy total return | 0.00% | 146.59% |
+| Buy-and-hold total return | 764.23% | 1173.96% |
+| Excess return vs buy-and-hold | -764.23% | -1027.37% |
+| Max drawdown | 0.00% | -55.09% |
+| Sharpe ratio | 0.0000 | 2.1212 |
+| Sortino ratio | 0.0000 | 2.2935 |
+| Win rate | 0.00% | 59.62% |
+| Active trades | 0 | 832 |
+
+XGBoost had higher classification accuracy and generated active trading signals in the simulation. However, both strategies underperformed the buy-and-hold benchmark over this test period after costs. This is important for the academic conclusion: better classification metrics do not automatically imply positive alpha versus a strong market benchmark.
 
 ## Limitations
 - Yahoo Finance data quality can vary by ticker and by date range.

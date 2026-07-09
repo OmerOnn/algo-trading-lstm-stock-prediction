@@ -1,6 +1,11 @@
 # Main project configuration
 
-# Data universe. Start with large, liquid stocks so the data is cleaner.
+# Data universe for training.
+# This list intentionally uses 100 large/liquid US-listed stocks across sectors
+# so the model learns from a broader market sample than a small tech-only basket.
+# Broad sector coverage includes technology, communication services,
+# consumer discretionary, consumer staples, financials, health care,
+# industrials, energy, utilities, materials, and real estate.
 tickers:
   - AAPL
   - MSFT
@@ -8,10 +13,100 @@ tickers:
   - AMZN
   - META
   - GOOGL
+  - GOOG
   - TSLA
+  - AVGO
+  - BRK-B
   - JPM
+  - LLY
+  - V
   - UNH
+  - MA
+  - COST
+  - NFLX
+  - WMT
+  - PG
+  - HD
+  - JNJ
+  - ABBV
+  - BAC
+  - KO
   - XOM
+  - ORCL
+  - CRM
+  - MRK
+  - CVX
+  - AMD
+  - PEP
+  - TMO
+  - ADBE
+  - ACN
+  - MCD
+  - CSCO
+  - IBM
+  - GE
+  - ABT
+  - LIN
+  - QCOM
+  - TXN
+  - DHR
+  - VZ
+  - INTU
+  - AMGN
+  - NOW
+  - ISRG
+  - CAT
+  - PM
+  - DIS
+  - SPGI
+  - NEE
+  - RTX
+  - PFE
+  - CMCSA
+  - UBER
+  - GS
+  - UNP
+  - LOW
+  - HON
+  - BKNG
+  - T
+  - COP
+  - BLK
+  - MS
+  - AMAT
+  - LMT
+  - SYK
+  - ELV
+  - TJX
+  - DE
+  - ADP
+  - GILD
+  - MDLZ
+  - PANW
+  - SCHW
+  - CB
+  - MMC
+  - C
+  - UPS
+  - PLD
+  - BMY
+  - SBUX
+  - ADI
+  - ETN
+  - MU
+  - REGN
+  - BA
+  - SO
+  - FI
+  - CI
+  - BSX
+  - ANET
+  - KLAC
+  - VRTX
+  - ZTS
+  - PGR
+  - LRCX
+  - WM
 
 benchmark_ticker: SPY
 
@@ -24,7 +119,10 @@ macro_tickers:
   usd_index: "DX-Y.NYB"
 
 
-start_date: "2015-01-01"
+# Start early enough for the longest labels.
+# A 10-year horizon needs at least 10 future years after each training row,
+# plus extra history for rolling indicators such as SMA-200.
+start_date: "2005-01-01"
 end_date: null   # null means download until today
 
 random_seed: 42
@@ -32,17 +130,22 @@ random_seed: 42
 # Supervised learning setup
 window_size: 60
 
-# The model can be trained for several horizons.
-# The UI will let the user choose one of these values.
+# Prediction horizons are measured in trading days, not calendar days.
+# Approximation used here: 1 trading week = 5 sessions,
+# 1 trading month = 21 sessions, 1 trading year = 252 sessions.
+# The UI lets the user choose a horizon only after that horizon was trained.
 prediction_horizons:
+  - 1      # 1 day
   - 5
-  - 10
-  - 20
-  - 30
-default_prediction_horizon: 10
+  - 21     # about 1 month
+  - 126    # about 6 months
+  - 252    # about 1 year
+  - 1260   # about 5 years
+  - 2520   # about 10 years
+default_prediction_horizon: 21
 
 # Backward-compatible value. Used only if prediction_horizons is missing.
-prediction_horizon: 10
+prediction_horizon: 21
 
 buy_threshold: 0.03      # future return >= 3% => BUY
 sell_threshold: -0.03    # future return <= -3% => SELL
@@ -53,13 +156,6 @@ device: "auto"
 num_workers: 0
 pin_memory: true
 
-random_seed: 42
-
-macro_tickers:
-  vix: "^VIX"
-  treasury_10y: "^TNX"
-  usd_index: "DX-Y.NYB"
-
 # Model settings
 # The project now uses LSTM by default, as requested.
 model_type: "lstm"       # "lstm" or "gru"
@@ -69,14 +165,6 @@ dropout: 0.35
 batch_size: 128
 learning_rate: 0.0003
 epochs: 50
-
-xgboost:
-  n_estimators: 400
-  max_depth: 4
-  learning_rate: 0.03
-  subsample: 0.8
-  colsample_bytree: 0.8
-  random_state: 42
 
 # Chronological split. Do not random-split time-series data.
 train_ratio: 0.70
@@ -98,9 +186,9 @@ allow_short: false             # false = long / cash only, true = long / short /
 
 # Output paths.
 # Horizon-specific files are created automatically, for example:
-# models/stock_advanced_model_h10.pt
-# models/feature_scaler_h10.pkl
-# models/model_metadata_h10.json
+# models/stock_advanced_model_h21.pt
+# models/feature_scaler_h21.pkl
+# models/model_metadata_h21.json
 model_output_path: "models/stock_advanced_model.pt"
 scaler_output_path: "models/feature_scaler.pkl"
 metadata_output_path: "models/model_metadata.json"

@@ -22,9 +22,9 @@ Show both statistical and financial evaluation:
 - Win rate and average trade return
 
 ## 6. Live Demo Flow
-1. Run `python train.py --horizon 10`
-2. Run `python train_xgboost.py --horizon 10`
-3. Run `python compare_results.py --horizon 10`
+1. Run `python train.py --horizon 21`
+2. Run `python train_xgboost.py --horizon 21`
+3. Run `python compare_results.py --horizon 21`
 4. Open the Streamlit app
 5. Enter a ticker and show the prediction card and probabilities
 

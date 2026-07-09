@@ -88,6 +88,9 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def add_benchmark_features(stock_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> pd.DataFrame:
     """Add market-wide benchmark return features, usually SPY."""
     out = stock_df.copy()
+    if benchmark_df is None or benchmark_df.empty:
+        return out
+
     bench = benchmark_df.copy()
     bench_close = bench["Adj Close"].astype(float)
     bench_features = pd.DataFrame(index=bench.index)

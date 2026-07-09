@@ -105,7 +105,9 @@ def download_macro_data(
     if not frames:
         return pd.DataFrame()
 
-    return pd.concat(frames, axis=1).sort_index()
+    macro_df = pd.concat(frames, axis=1).sort_index()
+    macro_df.replace([float("inf"), float("-inf")], pd.NA, inplace=True)
+    return macro_df.ffill()
 
 
 def download_earnings_data(ticker: str, limit: int = 100) -> pd.DataFrame:
@@ -139,46 +141,3 @@ def download_earnings_data(ticker: str, limit: int = 100) -> pd.DataFrame:
     return earnings
 
 
-def download_macro_data(
-    macro_tickers: dict[str, str],
-    start: str,
-    end: Optional[str] = None,
-) -> pd.DataFrame:
-    """
-    Download alternative / macro market data from Yahoo Finance.
-
-    Example:
-    - ^VIX     -> market fear / volatility index
-    - ^TNX     -> 10-year treasury yield proxy
-    - DX-Y.NYB -> US dollar index
-
-    The returned dataframe is indexed by date and can be joined to every stock.
-    """
-    all_features = []
-
-    for feature_name, ticker in macro_tickers.items():
-        try:
-            df = download_price_data(ticker, start, end)
-        except Exception as exc:
-            print(f"Warning: could not download macro ticker {ticker}: {exc}")
-            continue
-
-        close = df["Adj Close"].astype(float)
-
-        features = pd.DataFrame(index=df.index)
-        features[f"macro_{feature_name}_close"] = close
-        features[f"macro_{feature_name}_return_1d"] = close.pct_change()
-        features[f"macro_{feature_name}_return_5d"] = close.pct_change(5)
-        features[f"macro_{feature_name}_volatility_20d"] = features[
-            f"macro_{feature_name}_return_1d"
-        ].rolling(20).std()
-
-        all_features.append(features)
-
-    if not all_features:
-        return pd.DataFrame()
-
-    macro_df = pd.concat(all_features, axis=1).sort_index()
-    macro_df.replace([float("inf"), float("-inf")], pd.NA, inplace=True)
-    macro_df = macro_df.ffill()
-    return macro_df

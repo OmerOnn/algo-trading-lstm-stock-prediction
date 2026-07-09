@@ -65,6 +65,8 @@ def resolve_artifact_paths(config: dict, horizon: int) -> tuple[Path, Path, Path
 
 
 def build_latest_features(ticker: str, config: dict, feature_columns: list[str], horizon: int) -> pd.DataFrame:
+    # Inference is not limited to training tickers: download the requested ticker
+    # and rebuild the same feature columns the model saw during training.
     price_df = download_price_data(ticker, config["start_date"], config["end_date"])
     benchmark_df = download_price_data(config["benchmark_ticker"], config["start_date"], config["end_date"])
     macro_df = pd.DataFrame()
@@ -191,7 +193,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Predict BUY / HOLD / SELL signal for one or more stock tickers.")
     parser.add_argument("--ticker", type=str, default=None, help="Single ticker, for example AAPL")
     parser.add_argument("--tickers", type=str, default=None, help="Comma-separated tickers, for example AAPL,MSFT,NVDA")
-    parser.add_argument("--horizon", type=int, default=None, help="Prediction horizon in trading days, for example 5, 10, 20, or 30")
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=None,
+        help="Prediction horizon in trading days, for example 1, 5, 21, 126, 252, 1260, or 2520",
+    )
     parser.add_argument("--output", type=str, default="reports/latest_predictions.csv", help="CSV output path")
     return parser.parse_args()
 

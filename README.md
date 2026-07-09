@@ -106,30 +106,42 @@ This trains the LSTM model for the configured horizon set:
 python3 train.py
 ```
 
+The configured horizon set is:
+
+| Meaning | Trading-day horizon |
+|---|---:|
+| 1 day | 1 |
+| 1 week | 5 |
+| 1 month | 21 |
+| 6 months | 126 |
+| 1 year | 252 |
+| 5 years | 1260 |
+| 10 years | 2520 |
+
 To train one horizon only:
 
 ```bash
-python3 train.py --horizon 10
+python3 train.py --horizon 21
 ```
 
 ### Train the XGBoost model
 
 ```bash
-python3 train_xgboost.py --horizon 10
+python3 train_xgboost.py --horizon 21
 ```
 
 ### Run the full comparison
 
 ```bash
-python3 compare_models.py --horizon 10
+python3 compare_models.py --horizon 21
 ```
 
 This runs:
 
 ```bash
-python train.py --horizon 10
-python train_xgboost.py --horizon 10
-python compare_results.py --horizon 10
+python train.py --horizon 21
+python train_xgboost.py --horizon 21
+python compare_results.py --horizon 21
 ```
 
 ---
@@ -141,18 +153,18 @@ Training and evaluation create horizon-specific artifacts under `models/`, `repo
 Examples include:
 
 ```text
-models/stock_advanced_model_h10.pt
-models/xgboost_classifier_h10.joblib
-models/xgboost_regressor_h10.joblib
-models/model_metadata_h10.json
-reports/metrics_h10.json
-reports/metrics_xgboost_h10.json
-reports/test_predictions_h10.csv
-reports/test_predictions_xgboost_h10.csv
-reports/backtest_results_h10.csv
-reports/backtest_results_xgboost_h10.csv
-reports/model_comparison_h10.csv
-reports/model_comparison_h10.md
+models/stock_advanced_model_h21.pt
+models/xgboost_classifier_h21.joblib
+models/xgboost_regressor_h21.joblib
+models/model_metadata_h21.json
+reports/metrics_h21.json
+reports/metrics_xgboost_h21.json
+reports/test_predictions_h21.csv
+reports/test_predictions_xgboost_h21.csv
+reports/backtest_results_h21.csv
+reports/backtest_results_xgboost_h21.csv
+reports/model_comparison_h21.csv
+reports/model_comparison_h21.md
 ```
 
 ---
@@ -173,13 +185,13 @@ The backtest is intentionally simple and transparent for academic use:
 Single ticker:
 
 ```bash
-python3 predict.py --ticker AAPL --horizon 10
+python3 predict.py --ticker AAPL --horizon 21
 ```
 
 Multiple tickers:
 
 ```bash
-python3 predict.py --tickers AAPL,MSFT,NVDA --horizon 20
+python3 predict.py --tickers AAPL,MSFT,NVDA --horizon 252
 ```
 
 ---
@@ -222,16 +234,16 @@ In the UI, the user can:
 
 The UI can only predict a horizon after a model was trained for that horizon.
 
-For example, if you choose 20 trading days in the UI, you need this file:
+For example, if you choose 1 month / 21 trading days in the UI, you need this file:
 
 ```text
-models/stock_advanced_model_h20.pt
+models/stock_advanced_model_h21.pt
 ```
 
 If it does not exist, run:
 
 ```bash
-python3 train.py --horizon 20
+python3 train.py --horizon 21
 ```
 
 ---

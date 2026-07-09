@@ -29,7 +29,6 @@ def build_dataset_for_tickers(
     except Exception as exc:
         print(f"Warning: benchmark data download failed for {benchmark_ticker}: {exc}")
         benchmark_df = pd.DataFrame()
-    macro_df = download_macro_data(macro_tickers, start_date, end_date)
 
     macro_df = pd.DataFrame()
     if macro_tickers:
