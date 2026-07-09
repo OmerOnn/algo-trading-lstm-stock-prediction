@@ -1,25 +1,13 @@
 from __future__ import annotations
 
 import argparse
-<<<<<<< HEAD
-import subprocess
 import sys
-from pathlib import Path
 
-from src.device import get_best_device
-from train import get_horizons, load_config
-from train_xgboost import resolve_xgboost_backend
-
-
-ROOT = Path(__file__).resolve().parent
-=======
-
-from train import get_horizons, load_config, train_models_for_horizons as train_lstm_models_for_horizons
-from src.device import get_best_device
 from src.data_download import preload_training_data
+from src.device import get_best_device
+from train import get_horizons, load_config, train_models_for_horizons as train_lstm_models_for_horizons
 from train_xgboost import resolve_xgboost_backend
 from train_xgboost import train_models_for_horizons as train_xgboost_models_for_horizons
->>>>>>> bc65240c7ac90ca33229b03fd61c50d107fdb64b
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,13 +28,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-<<<<<<< HEAD
-def run_command(args: list[str]) -> None:
-    subprocess.run([sys.executable, *args], cwd=ROOT, check=True)
-
-
-=======
->>>>>>> bc65240c7ac90ca33229b03fd61c50d107fdb64b
 def train_all_models(selected_horizon: int | None = None, compare: bool = False) -> list[int]:
     config = load_config()
     horizons = get_horizons(config, selected_horizon)
@@ -70,17 +51,7 @@ def train_all_models(selected_horizon: int | None = None, compare: bool = False)
         print("LSTM training is running on CPU because no supported GPU backend was selected.")
     print(f"XGBoost backend: {xgb_device.upper()}")
     print(xgb_backend_message)
-<<<<<<< HEAD
 
-    run_command(["train.py", *([] if selected_horizon is None else ["--horizon", str(selected_horizon)])])
-    run_command(
-        ["train_xgboost.py", *([] if selected_horizon is None else ["--horizon", str(selected_horizon)])]
-    )
-
-    if compare:
-        for horizon in horizons:
-            run_command(["compare_results.py", "--horizon", str(horizon)])
-=======
     preload_training_data(
         tickers=config["tickers"],
         benchmark_ticker=config["benchmark_ticker"],
@@ -95,7 +66,6 @@ def train_all_models(selected_horizon: int | None = None, compare: bool = False)
 
     if compare:
         from compare_results import main as compare_results_main
-        import sys
 
         for horizon in horizons:
             original_argv = sys.argv[:]
@@ -104,7 +74,6 @@ def train_all_models(selected_horizon: int | None = None, compare: bool = False)
                 compare_results_main()
             finally:
                 sys.argv = original_argv
->>>>>>> bc65240c7ac90ca33229b03fd61c50d107fdb64b
 
     print("\nFinished training all requested models.")
     print("Checkpoints are saved under models/ and reports/ with horizon-specific filenames.")

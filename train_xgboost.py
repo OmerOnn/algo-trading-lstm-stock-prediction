@@ -142,11 +142,8 @@ def resolve_xgboost_backend(config: dict) -> tuple[str, str]:
 
 
 def train_for_horizon(config: dict, horizon: int) -> None:
-<<<<<<< HEAD
-=======
     label_buy_threshold, label_sell_threshold = resolve_label_thresholds(config, horizon)
 
->>>>>>> bc65240c7ac90ca33229b03fd61c50d107fdb64b
     if XGBClassifier is Any or XGBRegressor is Any:
         raise ModuleNotFoundError(
             "xgboost is not installed in this environment. Install dependencies before running XGBoost training."
@@ -158,13 +155,10 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     xgb_device, xgb_backend_message = resolve_xgboost_backend(config)
     print(f"Execution backend: {xgb_device.upper()}")
     print(xgb_backend_message)
-<<<<<<< HEAD
-=======
     print(
         f"Label thresholds for h{horizon}: SELL <= {label_sell_threshold:.4f}, "
         f"BUY >= {label_buy_threshold:.4f}"
     )
->>>>>>> bc65240c7ac90ca33229b03fd61c50d107fdb64b
 
     processed_dir = ROOT / "data" / "processed"
     cache_dir = ROOT / "data" / "cache"
