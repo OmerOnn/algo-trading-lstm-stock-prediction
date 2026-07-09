@@ -16,3 +16,5 @@ __pycache__/
 
 # Ignore accidental certifi temp folder
 C:/temp/certifi/
+
+data/cache/
