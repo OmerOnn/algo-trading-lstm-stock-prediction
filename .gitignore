@@ -1,34 +1,15 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
 .venv/
 venv/
-env/
-
-# macOS
-.DS_Store
-
-# VS Code
-.vscode/
-
-# Data and generated files
-data/raw/
-data/processed/
+data/
 reports/
-logs/
 models/
-
-# Large ML artifacts
+logs/
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
 *.pt
 *.pth
 *.pkl
 *.joblib
 
-# Streamlit secrets
-.streamlit/secrets.toml
-
-# Environment variables
-.env

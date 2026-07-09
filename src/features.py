@@ -21,6 +21,8 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["log_return_1d"] = np.log(close / close.shift(1))
     out["return_5d"] = close.pct_change(5)
     out["return_10d"] = close.pct_change(10)
+    out["return_20d"] = close.pct_change(20)
+    out["return_60d"] = close.pct_change(60)
 
     for window in [20, 50, 200]:
         out[f"sma_{window}"] = close.rolling(window).mean()
@@ -72,10 +74,13 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # Volume features
     out["volume_sma_20"] = volume.rolling(20).mean()
     out["volume_ratio_20"] = volume / out["volume_sma_20"]
+    out["volume_change_5d"] = volume.pct_change(5)
+    out["volume_change_20d"] = volume.pct_change(20)
 
     # Realized volatility
     out["volatility_10d"] = out["return_1d"].rolling(10).std()
     out["volatility_20d"] = out["return_1d"].rolling(20).std()
+    out["volatility_60d"] = out["return_1d"].rolling(60).std()
 
     return out
 
@@ -83,13 +88,32 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def add_benchmark_features(stock_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> pd.DataFrame:
     """Add market-wide benchmark return features, usually SPY."""
     out = stock_df.copy()
+    if benchmark_df is None or benchmark_df.empty:
+        return out
+
     bench = benchmark_df.copy()
+    if "Adj Close" not in bench.columns:
+        return out
+
     bench_close = bench["Adj Close"].astype(float)
     bench_features = pd.DataFrame(index=bench.index)
     bench_features["benchmark_return_1d"] = bench_close.pct_change()
     bench_features["benchmark_return_5d"] = bench_close.pct_change(5)
     bench_features["benchmark_volatility_20d"] = bench_features["benchmark_return_1d"].rolling(20).std()
     out = out.join(bench_features, how="left")
+    return out
+
+
+def add_macro_features(stock_df: pd.DataFrame, macro_df: pd.DataFrame | None) -> pd.DataFrame:
+    """Join macro/alternative features by date and forward-fill missing values."""
+    out = stock_df.copy()
+    if macro_df is None or macro_df.empty:
+        return out
+
+    macro = macro_df.copy().sort_index()
+    out = out.join(macro, how="left")
+    for column in macro.columns:
+        out[column] = out[column].ffill()
     return out
 
 

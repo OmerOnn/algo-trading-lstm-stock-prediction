@@ -10,12 +10,12 @@ import pandas as pd
 import torch
 import yaml
 
-from src.data_download import download_earnings_data, download_price_data
+from src.data_download import download_earnings_data, download_macro_data, download_price_data
 from src.features import (
     ID_TO_CLASS,
     add_benchmark_features,
     add_earnings_features,
-    add_labels,
+    add_macro_features,
     add_technical_indicators,
 )
 from src.device import get_best_device
@@ -68,20 +68,19 @@ def build_latest_features(ticker: str, config: dict, feature_columns: list[str],
     price_df = download_price_data(ticker, config["start_date"], config["end_date"])
     benchmark_df = download_price_data(config["benchmark_ticker"], config["start_date"], config["end_date"])
     earnings_df = download_earnings_data(ticker)
+    macro_df = download_macro_data(config.get("macro_tickers"), config["start_date"], config["end_date"])
 
     df = add_technical_indicators(price_df)
     df = add_benchmark_features(df, benchmark_df)
+    df = add_macro_features(df, macro_df)
     df = add_earnings_features(df, earnings_df)
 
-    # Labels are not used for inference, but this keeps columns consistent if needed.
-    df = add_labels(
-        df,
-        horizon=horizon,
-        buy_threshold=float(config["buy_threshold"]),
-        sell_threshold=float(config["sell_threshold"]),
-    )
-
     df.replace([float("inf"), float("-inf")], pd.NA, inplace=True)
+
+    for column in feature_columns:
+        if column not in df.columns:
+            df[column] = 0.0
+
     df = df.dropna(subset=feature_columns).copy()
     return df
 

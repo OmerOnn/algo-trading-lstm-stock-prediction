@@ -1,221 +1,45 @@
 # Algo Trading Stock Predictor
 
-Academic deep-learning project for simulated stock signal prediction.
+This project is an academic final-project pipeline for stock movement prediction in the context of AI and Innovation in Capital Markets. It combines financial data, feature engineering, machine learning, and a simple trading backtest in a research-oriented workflow.
 
-The project trains an LSTM-based model that predicts:
+## Project goal
+The goal is to predict short-horizon stock movement as a simulated classification and regression task. The system produces BUY / HOLD / SELL signals and an expected future return for a selected horizon.
 
-- `BUY`
-- `HOLD`
-- `SELL`
-- expected percentage movement
+## Dataset
+The pipeline downloads daily OHLCV data from Yahoo Finance for selected stocks and benchmark market data. It also adds alternative and macro information, including VIX, 10-year Treasury yields, and the US dollar index, as well as earnings-related features.
 
-The model uses historical prices, technical indicators, volatility features, benchmark-market features, and earnings-related features.
+## Feature engineering
+The model uses technical indicators, benchmark-market features, macro features, and earnings features. The feature pipeline is chronological and avoids random time-based splitting.
 
-> This project is for academic research and simulation only. It is not financial advice.
+## Models
+The repository keeps the existing LSTM flow and adds XGBoost as a second model:
+- LSTM: sequence-based deep learning model for classification and return regression
+- XGBoost: gradient-boosted decision tree model for the same targets
 
----
+## Backtesting methodology
+The project evaluates predictions with a simple event-based backtest that uses realized future returns and includes transaction costs and slippage. It reports total return, drawdown, Sharpe ratio, Sortino ratio, win rate, and alpha relative to buy-and-hold.
 
-## Main changes in this version
+## Output files
+Training and evaluation produce artifacts in the models and reports folders, including:
+- trained LSTM and XGBoost models
+- metrics JSON files
+- test prediction CSV files
+- backtest CSV files
+- model comparison reports
 
-This version includes the requested fixes:
-
-1. The project uses **LSTM** by default.
-2. Training stops early if validation loss does not improve for **7 straight epochs**.
-3. The UI no longer shows the internal model type, GPU, CUDA, MPS, or device information to the user.
-4. The UI lets the user choose the prediction horizon using a bar/slider.
-5. The project supports several prediction horizons: `5`, `10`, `20`, and `30` trading days.
-6. The UI displays expected movement consistently with the selected signal.
-   - `BUY` is shown as positive movement.
-   - `SELL` is shown as negative movement.
-   - `HOLD` is shown as neutral/raw expected movement.
-
----
-
-## Project structure
-
-```text
-algo_trading_advanced_model/
-├── app.py
-├── train.py
-├── predict.py
-├── check_device.py
-├── compare_models.py
-├── evaluate_saved_model.py
-├── configs/
-│   └── config.yaml
-├── src/
-│   ├── backtest.py
-│   ├── baselines.py
-│   ├── data_download.py
-│   ├── dataset.py
-│   ├── device.py
-│   ├── features.py
-│   ├── model.py
-│   ├── pipeline.py
-│   └── plots.py
-├── models/
-├── reports/
-└── requirements.txt
-```
-
----
-
-## Setup on Mac
-
+## How to run
 ```bash
-cd algo_trading_advanced_model
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
+python train.py --horizon 10
+python train_xgboost.py --horizon 10
+python compare_results.py --horizon 10
+python evaluate_saved_model.py --model lstm --horizon 10
+python evaluate_saved_model.py --model xgboost --horizon 10
+streamlit run app.py
 ```
 
-Check acceleration:
+## Limitations
+This project is a research simulation only. It is not financial advice, and results can be affected by data quality, label design, changing market regimes, and transaction costs.
 
-```bash
-python3 check_device.py
-```
-
-On Apple Silicon Mac, it should show `mps`.
-
----
-
-## Training
-
-### Train all configured horizons
-
-This trains separate LSTM models for all horizons in `configs/config.yaml`:
-
-```bash
-python3 train.py
-```
-
-By default, it trains models for:
-
-```text
-5, 10, 20, 30 trading days ahead
-```
-
-This creates files like:
-
-```text
-models/stock_advanced_model_h5.pt
-models/stock_advanced_model_h10.pt
-models/stock_advanced_model_h20.pt
-models/stock_advanced_model_h30.pt
-
-models/feature_scaler_h5.pkl
-models/feature_scaler_h10.pkl
-models/feature_scaler_h20.pkl
-models/feature_scaler_h30.pkl
-
-models/model_metadata_h5.json
-models/model_metadata_h10.json
-models/model_metadata_h20.json
-models/model_metadata_h30.json
-```
-
-### Train only one horizon
-
-For faster testing:
-
-```bash
-python3 train.py --horizon 10
-```
-
-or:
-
-```bash
-python3 train.py --horizon 5
-```
-
----
-
-## Early stopping
-
-The model trains up to the maximum number of epochs:
-
-```yaml
-epochs: 50
-```
-
-But it stops earlier if validation loss does not improve for 7 straight epochs:
-
-```yaml
-early_stopping_patience: 7
-```
-
-So training stops when either:
-
-```text
-1. It reaches the maximum number of epochs
-2. Validation loss does not improve for 7 consecutive epochs
-```
-
----
-
-## Prediction from terminal
-
-Single ticker:
-
-```bash
-python3 predict.py --ticker AAPL --horizon 10
-```
-
-Multiple tickers:
-
-```bash
-python3 predict.py --tickers AAPL,MSFT,NVDA --horizon 20
-```
-
----
-
-## Run the UI
-
-```bash
-python3 -m streamlit run app.py
-```
-
-Then open:
-
-```text
-http://localhost:8501
-```
-
-In the UI, the user can:
-
-- Enter one stock ticker or many tickers
-- Choose the prediction horizon
-- Run prediction
-- View BUY / HOLD / SELL
-- View expected movement
-- View confidence
-- View class probabilities
-- Download predictions as CSV
-
----
-
-## Important note about horizons
-
-The UI can only predict a horizon after a model was trained for that horizon.
-
-For example, if you choose 20 trading days in the UI, you need this file:
-
-```text
-models/stock_advanced_model_h20.pt
-```
-
-If it does not exist, run:
-
-```bash
-python3 train.py --horizon 20
-```
-
----
-
-## Academic interpretation
-
-The dashboard should be described as a research simulation system, not as a real investment-advice system.
-
-A good project explanation:
-
-> The system predicts simulated trading signals using sequential market data, technical indicators, volatility features, benchmark data, and earnings-related features. The output is evaluated academically using classification metrics and backtesting, and should not be interpreted as financial advice.
+## Academic disclaimer
+This repository is intended for academic study and demonstration in a final project setting. It should not be interpreted as investment advice.

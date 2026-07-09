@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import shutil
 from pathlib import Path
 
@@ -27,6 +28,16 @@ from src.training_logger import training_log_context
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+def set_seed(seed: int) -> None:
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def load_config(path: str = "configs/config.yaml") -> dict:
@@ -314,6 +325,7 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
         prediction_horizon=horizon,
         buy_threshold=float(config["buy_threshold"]),
         sell_threshold=float(config["sell_threshold"]),
+        macro_tickers=config.get("macro_tickers"),
     )
 
     full_df = add_sma_crossover_baseline(full_df)
@@ -515,11 +527,17 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
 
     plot_backtest_equity(backtest_df, plots_dir)
 
-    baselines = baseline_accuracy(full_df)
+    baselines = baseline_accuracy(test_df)
 
     all_metrics = {
+        "model_name": "LSTM",
         "prediction_horizon": horizon,
         "validation_best_loss": float(best_validation_loss),
+        "train_size": int(len(train_df)),
+        "validation_size": int(len(validation_df)),
+        "test_size": int(len(test_df)),
+        "feature_count": int(len(feature_columns)),
+        "feature_columns": feature_columns,
         "test_metrics": strip_arrays(test_metrics),
         "baseline_metrics": baselines,
         "backtest_metrics": backtest_metrics,
@@ -574,6 +592,7 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
 def main() -> None:
     config = load_config()
     args = parse_args()
+    set_seed(config.get("random_seed", 42))
 
     horizons = get_horizons(config, args.horizon)
     logs_dir = ROOT / "logs"

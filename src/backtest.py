@@ -108,11 +108,16 @@ def backtest_signals(signal_df: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.D
     downside = returns[returns < 0].std(ddof=0)
     sortino = 0.0 if downside == 0 or np.isnan(downside) else float((avg_return / downside) * np.sqrt(252))
 
+    trade_returns = df.loc[df["position"] != 0, "strategy_return"].astype(float)
+    win_rate = 0.0 if trade_returns.empty else float((trade_returns > 0).mean())
+    average_trade_return = 0.0 if trade_returns.empty else float(trade_returns.mean())
+
     metrics = {
         "initial_cash": float(cfg.initial_cash),
         "final_equity": float(daily["equity"].iloc[-1]),
         "total_return": float(total_return),
         "buy_and_hold_total_return": float(buy_hold_return),
+        "excess_return_vs_buy_hold": float(total_return - buy_hold_return),
         "max_drawdown": float(daily["drawdown"].min()),
         "sharpe_ratio": sharpe,
         "sortino_ratio": sortino,
@@ -121,5 +126,9 @@ def backtest_signals(signal_df: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.D
         "number_of_prediction_dates": int(len(daily)),
         "number_of_active_trades": int(df["position"].ne(0).sum()),
         "trade_activation_rate": float(df["position"].ne(0).mean()),
+        "win_rate": win_rate,
+        "average_trade_return": average_trade_return,
+        "best_period_return": float(returns.max()) if not returns.empty else 0.0,
+        "worst_period_return": float(returns.min()) if not returns.empty else 0.0,
     }
     return daily, metrics
