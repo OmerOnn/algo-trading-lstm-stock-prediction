@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.data_download import download_earnings_data, download_macro_data, download_price_data
@@ -123,7 +124,7 @@ def build_dataset_for_tickers(
         df = add_macro_features(df, macro_df)
         df = add_earnings_features(df, earnings_df)
         df = add_labels(df, prediction_horizon, buy_threshold, sell_threshold)
-        df.replace([float("inf"), float("-inf")], pd.NA, inplace=True)
+        df = df.replace([np.inf, -np.inf], np.nan)
         all_frames.append(df)
 
     full_df = pd.concat(all_frames).sort_index()

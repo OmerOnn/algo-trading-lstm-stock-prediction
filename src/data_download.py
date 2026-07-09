@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import certifi
+import numpy as np
 import pandas as pd
 
 
@@ -106,7 +107,7 @@ def download_macro_data(
         return pd.DataFrame()
 
     macro_df = pd.concat(frames, axis=1).sort_index()
-    macro_df.replace([float("inf"), float("-inf")], pd.NA, inplace=True)
+    macro_df = macro_df.replace([np.inf, -np.inf], np.nan)
     return macro_df.ffill()
 
 
