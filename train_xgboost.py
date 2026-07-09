@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 import joblib
@@ -29,8 +30,28 @@ def load_config(path: str = "configs/config.yaml") -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train XGBoost stock signal model.")
-    parser.add_argument("--horizon", type=int, default=None, help="Prediction horizon, for example 10")
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=None,
+        help="Train one prediction horizon. If omitted, trains all configured horizons.",
+    )
     return parser.parse_args()
+
+
+def get_horizons(config: dict, selected_horizon: int | None = None) -> list[int]:
+    if selected_horizon is not None:
+        return [int(selected_horizon)]
+
+    if "prediction_horizons" in config and config["prediction_horizons"]:
+        return [int(h) for h in config["prediction_horizons"]]
+
+    return [int(config.get("prediction_horizon", 10))]
+
+
+def set_seed(seed: int) -> None:
+    random.seed(int(seed))
+    np.random.seed(int(seed))
 
 
 def evaluate_xgboost(
@@ -39,6 +60,7 @@ def evaluate_xgboost(
     test_df: pd.DataFrame,
     feature_columns: list[str],
 ) -> dict:
+    x_test = test_df[feature_columns]
     y_class = test_df["signal_label"].astype(int).values
     y_return = test_df["future_return"].astype(float).values
 
@@ -122,8 +144,6 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     y_train_class = train_df["signal_label"].astype(int)
     y_train_return = train_df["future_return"].astype(float)
 
-    x_test = test_df[feature_columns]
-
     xgb_cfg = config.get("xgboost", {})
 
     classifier = XGBClassifier(
@@ -135,7 +155,8 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         learning_rate=float(xgb_cfg.get("learning_rate", 0.03)),
         subsample=float(xgb_cfg.get("subsample", 0.8)),
         colsample_bytree=float(xgb_cfg.get("colsample_bytree", 0.8)),
-        random_state=int(xgb_cfg.get("random_state", 42)),
+        random_state=int(xgb_cfg.get("random_state", config.get("random_seed", 42))),
+        n_jobs=-1,
     )
 
     regressor = XGBRegressor(
@@ -145,7 +166,8 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         learning_rate=float(xgb_cfg.get("learning_rate", 0.03)),
         subsample=float(xgb_cfg.get("subsample", 0.8)),
         colsample_bytree=float(xgb_cfg.get("colsample_bytree", 0.8)),
-        random_state=int(xgb_cfg.get("random_state", 42)),
+        random_state=int(xgb_cfg.get("random_state", config.get("random_seed", 42))),
+        n_jobs=-1,
     )
 
     classifier.fit(x_train, y_train_class)
@@ -161,14 +183,13 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     print("\nFinal XGBoost test classification report:")
     print(test_metrics["classification_report"])
 
-    metadata = []
-    for idx, row in test_df.iterrows():
-        metadata.append(
-            {
-                "ticker": row["Ticker"],
-                "date": str(pd.to_datetime(idx).date()),
-            }
-        )
+    metadata = [
+        {
+            "ticker": row["Ticker"],
+            "date": str(pd.to_datetime(idx).date()),
+        }
+        for idx, row in test_df.iterrows()
+    ]
 
     signal_df = build_signal_frame(
         metadata=metadata,
@@ -206,10 +227,10 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     all_metrics = {
         "model_name": "XGBoost",
         "prediction_horizon": horizon,
-        "train_size": len(train_df),
-        "validation_size": len(validation_df),
-        "test_size": len(test_df),
-        "feature_count": len(feature_columns),
+        "train_size": int(len(train_df)),
+        "validation_size": int(len(validation_df)),
+        "test_size": int(len(test_df)),
+        "feature_count": int(len(feature_columns)),
         "feature_columns": feature_columns,
         "test_metrics": strip_arrays(test_metrics),
         "baseline_metrics": baselines,
@@ -231,9 +252,10 @@ def train_for_horizon(config: dict, horizon: int) -> None:
 def main() -> None:
     config = load_config()
     args = parse_args()
+    set_seed(int(config.get("random_seed", 42)))
 
-    horizon = int(args.horizon or config.get("default_prediction_horizon", config.get("prediction_horizon", 10)))
-    train_for_horizon(config, horizon)
+    for horizon in get_horizons(config, args.horizon):
+        train_for_horizon(config, int(horizon))
 
     print("\nXGBoost training finished.")
     print("Important: this project is for academic research and simulation only, not financial advice.")
