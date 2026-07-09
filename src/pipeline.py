@@ -21,6 +21,7 @@ def save_dataset_cache(
     df: pd.DataFrame,
     feature_columns: list[str],
     cache_path: str | Path,
+    metadata: dict | None = None,
 ) -> None:
     """Save a processed supervised dataset and its feature-column contract."""
     path = Path(cache_path)
@@ -29,10 +30,13 @@ def save_dataset_cache(
 
     metadata_path = path.with_suffix(".features.json")
     with open(metadata_path, "w", encoding="utf-8") as file:
-        json.dump({"feature_columns": feature_columns}, file, indent=2)
+        payload = {"feature_columns": feature_columns}
+        if metadata:
+            payload.update(metadata)
+        json.dump(payload, file, indent=2)
 
 
-def load_dataset_cache(cache_path: str | Path) -> tuple[pd.DataFrame, list[str]]:
+def load_dataset_cache(cache_path: str | Path) -> tuple[pd.DataFrame, list[str], dict]:
     """Load a cached processed dataset built by save_dataset_cache."""
     path = Path(cache_path)
     if not path.exists():
@@ -42,13 +46,15 @@ def load_dataset_cache(cache_path: str | Path) -> tuple[pd.DataFrame, list[str]]
     df.index.name = None
 
     metadata_path = path.with_suffix(".features.json")
+    metadata: dict = {}
     if metadata_path.exists():
         with open(metadata_path, "r", encoding="utf-8") as file:
-            feature_columns = list(json.load(file)["feature_columns"])
+            metadata = json.load(file)
+            feature_columns = list(metadata["feature_columns"])
     else:
         feature_columns = get_feature_columns(df)
 
-    return df, feature_columns
+    return df, feature_columns, metadata
 
 
 def build_or_load_dataset_for_tickers(
@@ -67,7 +73,14 @@ def build_or_load_dataset_for_tickers(
     """Load the processed dataset from cache, or build and cache it."""
     if cache_path and use_cache and not force_rebuild and Path(cache_path).exists():
         print(f"Loading processed dataset cache: {cache_path}")
-        return load_dataset_cache(cache_path)
+        cached_df, cached_features, cached_metadata = load_dataset_cache(cache_path)
+        if (
+            int(cached_metadata.get("prediction_horizon", prediction_horizon)) == int(prediction_horizon)
+            and float(cached_metadata.get("buy_threshold", buy_threshold)) == float(buy_threshold)
+            and float(cached_metadata.get("sell_threshold", sell_threshold)) == float(sell_threshold)
+        ):
+            return cached_df, cached_features
+        print("Cached dataset thresholds/horizon do not match current config. Rebuilding cache.")
 
     full_df, feature_columns = build_dataset_for_tickers(
         tickers=tickers,
@@ -82,7 +95,16 @@ def build_or_load_dataset_for_tickers(
 
     if cache_path and use_cache:
         print(f"Saving processed dataset cache: {cache_path}")
-        save_dataset_cache(full_df, feature_columns, cache_path)
+        save_dataset_cache(
+            full_df,
+            feature_columns,
+            cache_path,
+            metadata={
+                "prediction_horizon": int(prediction_horizon),
+                "buy_threshold": float(buy_threshold),
+                "sell_threshold": float(sell_threshold),
+            },
+        )
 
     return full_df, feature_columns
 
