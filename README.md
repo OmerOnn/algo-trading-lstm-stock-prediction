@@ -151,6 +151,34 @@ python3 train.py --horizon 21
 python3 train_xgboost.py --horizon 21
 ```
 
+To train both model families for all configured horizons and save every horizon-specific checkpoint:
+
+```bash
+python3 train_all_models.py
+```
+
+On Apple Silicon Mac, set `device: "mps"` in `configs/config.yaml` to force LSTM training onto the Apple GPU. With `device: "auto"`, the project will also choose `MPS` automatically when PyTorch detects it. The training logs will print the selected backend.
+
+For XGBoost, GPU training is supported only through `CUDA`, so Apple `Metal/MPS` does not accelerate XGBoost. If you move this project to a machine with an NVIDIA GPU and CUDA-enabled XGBoost, set:
+
+```yaml
+xgboost:
+  device: "cuda"
+```
+
+Otherwise use:
+
+```yaml
+xgboost:
+  device: "auto"
+```
+
+To train both model families for just one horizon and also generate the comparison report:
+
+```bash
+python3 train_all_models.py --horizon 21 --compare
+```
+
 ### Run the full comparison
 
 ```bash
