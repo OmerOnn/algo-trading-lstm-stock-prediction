@@ -94,6 +94,27 @@ python3 check_device.py
 
 Use `python` instead of `python3` on Windows if needed.
 
+Device selection is controlled by `configs/config.yaml`:
+
+```yaml
+device: "auto"
+```
+
+`auto` uses CUDA on NVIDIA GPUs, MPS/Metal on Apple Silicon Macs when available, and CPU otherwise. On Mac you can also set `device: "mps"`, `device: "metal"`, or `device: "mac"` explicitly.
+
+---
+
+## Dataset Cache
+
+Training saves the processed supervised dataset under `data/cache/` after it is built. Later LSTM or XGBoost runs for the same horizon reuse that cache instead of downloading and rebuilding the dataset again.
+
+```yaml
+use_dataset_cache: true
+force_rebuild_dataset_cache: false
+```
+
+Set `force_rebuild_dataset_cache: true` when tickers, dates, macro sources, thresholds, or feature logic changed and you want to rebuild the cached dataset.
+
 ---
 
 ## Training

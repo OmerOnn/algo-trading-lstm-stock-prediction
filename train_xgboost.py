@@ -15,7 +15,7 @@ from xgboost import XGBClassifier, XGBRegressor
 from src.backtest import BacktestConfig, backtest_signals, build_signal_frame
 from src.baselines import add_sma_crossover_baseline, baseline_accuracy
 from src.features import ID_TO_CLASS
-from src.pipeline import build_dataset_for_tickers
+from src.pipeline import build_or_load_dataset_for_tickers
 from src.plots import plot_backtest_equity
 from train import chronological_train_validation_test_split
 
@@ -111,16 +111,19 @@ def train_for_horizon(config: dict, horizon: int) -> None:
     print("=" * 72)
 
     processed_dir = ROOT / "data" / "processed"
+    cache_dir = ROOT / "data" / "cache"
     report_dir = ROOT / "reports"
     model_dir = ROOT / "models"
     plots_dir = ROOT / config["plots_output_dir"] / f"xgboost_h{horizon}"
 
     processed_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    full_df, feature_columns = build_dataset_for_tickers(
+    dataset_cache_path = cache_dir / f"full_dataset_h{horizon}.csv"
+    full_df, feature_columns = build_or_load_dataset_for_tickers(
         tickers=config["tickers"],
         benchmark_ticker=config["benchmark_ticker"],
         start_date=config["start_date"],
@@ -129,6 +132,9 @@ def train_for_horizon(config: dict, horizon: int) -> None:
         buy_threshold=float(config["buy_threshold"]),
         sell_threshold=float(config["sell_threshold"]),
         macro_tickers=config.get("macro_tickers"),
+        cache_path=dataset_cache_path,
+        use_cache=bool(config.get("use_dataset_cache", True)),
+        force_rebuild=bool(config.get("force_rebuild_dataset_cache", False)),
     )
 
     full_df = add_sma_crossover_baseline(full_df)

@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
@@ -11,6 +13,7 @@ from src.features import (
     add_technical_indicators,
     get_feature_columns,
 )
+from src.pipeline import load_dataset_cache, save_dataset_cache
 
 
 def make_ohlcv_frame(start="2018-01-01", end="2025-01-01", ticker="TEST") -> pd.DataFrame:
@@ -119,6 +122,22 @@ class DataPipelineValidationTest(unittest.TestCase):
         self.assertGreaterEqual(len(features), 500)
         self.assertEqual(features["Ticker"].iloc[-1], "NFLX")
         self.assertFalse(features[feature_columns].isna().any().any())
+
+    def test_dataset_cache_roundtrip_preserves_features(self):
+        stock_df = make_ohlcv_frame(ticker="CACHE")
+        processed = add_technical_indicators(stock_df)
+        processed = add_labels(processed, horizon=21, buy_threshold=0.03, sell_threshold=-0.03)
+        feature_columns = get_feature_columns(processed)
+        usable = processed.dropna(subset=feature_columns + ["future_return", "signal_label"]).copy()
+
+        with TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "full_dataset_h21.csv"
+            save_dataset_cache(usable, feature_columns, cache_path)
+            loaded, loaded_feature_columns = load_dataset_cache(cache_path)
+
+        self.assertEqual(feature_columns, loaded_feature_columns)
+        self.assertEqual(len(usable), len(loaded))
+        self.assertEqual(list(usable.columns), list(loaded.columns))
 
 
 if __name__ == "__main__":

@@ -127,6 +127,12 @@ end_date: null   # null means download until today
 
 random_seed: 42
 
+# Dataset cache.
+# When true, processed supervised datasets are saved under data/cache and reused
+# by later training runs with the same horizon.
+use_dataset_cache: true
+force_rebuild_dataset_cache: false
+
 # Supervised learning setup
 window_size: 60
 

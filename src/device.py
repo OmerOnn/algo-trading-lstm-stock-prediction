@@ -25,12 +25,14 @@ def get_best_device(preferred_device: str = "auto") -> DeviceInfo:
     Parameters
     ----------
     preferred_device:
-        "auto", "cuda", "mps", or "cpu".
+        "auto", "cuda", "mps", "metal", "mac", or "cpu".
     """
     preferred_device = str(preferred_device or "auto").lower().strip()
+    aliases = {"metal": "mps", "mac": "mps", "apple": "mps"}
+    preferred_device = aliases.get(preferred_device, preferred_device)
     allowed = {"auto", "cuda", "mps", "cpu"}
     if preferred_device not in allowed:
-        raise ValueError(f"Invalid device '{preferred_device}'. Use one of: {sorted(allowed)}")
+        raise ValueError("Invalid device. Use one of: auto, cuda, mps, metal, mac, apple, cpu")
 
     if preferred_device in {"auto", "cuda"} and torch.cuda.is_available():
         device = torch.device("cuda")
@@ -40,7 +42,13 @@ def get_best_device(preferred_device: str = "auto") -> DeviceInfo:
     if preferred_device == "cuda":
         raise RuntimeError("CUDA was requested, but no CUDA-capable NVIDIA GPU is available to PyTorch.")
 
-    if preferred_device in {"auto", "mps"} and torch.backends.mps.is_available():
+    mps_available = bool(
+        hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+        and torch.backends.mps.is_built()
+    )
+
+    if preferred_device in {"auto", "mps"} and mps_available:
         device = torch.device("mps")
         return DeviceInfo(device=device, device_name="Apple Silicon GPU", accelerator="MPS / Apple Metal GPU")
 

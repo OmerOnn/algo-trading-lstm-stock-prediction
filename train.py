@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import shutil
 from pathlib import Path
+
+# Improves Mac/Apple Silicon compatibility when a PyTorch op is not implemented
+# on MPS yet. It must be set before importing torch.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import joblib
 import numpy as np
@@ -22,7 +27,7 @@ from src.dataset import StockSequenceDataset
 from src.device import dataloader_device_kwargs, get_best_device, move_batch_to_device
 from src.features import ID_TO_CLASS
 from src.model import StockSignalModel
-from src.pipeline import build_dataset_for_tickers
+from src.pipeline import build_or_load_dataset_for_tickers
 from src.plots import plot_backtest_equity, plot_training_history
 from src.training_logger import training_log_context
 
@@ -303,11 +308,13 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
     print("=" * 72)
 
     processed_dir = ROOT / "data" / "processed"
+    cache_dir = ROOT / "data" / "cache"
     report_dir = ROOT / "reports"
     plots_root = ROOT / config["plots_output_dir"]
     plots_dir = plots_root / f"h{horizon}"
 
     processed_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
@@ -317,7 +324,8 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
     metrics_path = artifact_path(config["metrics_output_path"], horizon)
     backtest_path = artifact_path(config["backtest_output_path"], horizon)
 
-    full_df, feature_columns = build_dataset_for_tickers(
+    dataset_cache_path = cache_dir / f"full_dataset_h{horizon}.csv"
+    full_df, feature_columns = build_or_load_dataset_for_tickers(
         tickers=config["tickers"],
         benchmark_ticker=config["benchmark_ticker"],
         start_date=config["start_date"],
@@ -326,6 +334,9 @@ def train_for_horizon(config: dict, horizon: int, device_info) -> None:
         buy_threshold=float(config["buy_threshold"]),
         sell_threshold=float(config["sell_threshold"]),
         macro_tickers=config.get("macro_tickers"),
+        cache_path=dataset_cache_path,
+        use_cache=bool(config.get("use_dataset_cache", True)),
+        force_rebuild=bool(config.get("force_rebuild_dataset_cache", False)),
     )
 
     full_df = add_sma_crossover_baseline(full_df)
