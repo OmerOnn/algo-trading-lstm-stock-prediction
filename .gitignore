@@ -1,6 +1,6 @@
 .venv/
 venv/
-data/
+data/processed
 reports/
 models/
 logs/
