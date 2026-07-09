@@ -13,3 +13,6 @@ __pycache__/
 *.pkl
 *.joblib
 
+
+# Ignore accidental certifi temp folder
+C:/temp/certifi/
