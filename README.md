@@ -1,18 +1,19 @@
 # Algo Trading Stock Predictor
 
-Academic final project for Track 2, building a machine learning system that predicts stock movement and evaluates the result as a trading strategy.
+Academic final project for Track 2, building a machine learning system that predicts future stock return and evaluates the result as a trading strategy.
 
-The repo now contains two model families that share the same chronological data pipeline:
+The repo contains two regression model families that share the same chronological data pipeline:
 
-1. LSTM multi-task model over 60-day sequential windows.
-2. XGBoost classifier/regressor over engineered tabular financial features.
+1. `LSTMRegressor` over 60-day sequential windows.
+2. `XGBoostRegressor` over engineered tabular financial features.
 
-Both models predict:
+The supervised learning target is:
 
-- `BUY`
-- `HOLD`
-- `SELL`
-- expected future return
+```text
+future_return_h = Close[t + horizon] / Close[t] - 1
+```
+
+Trading signals are derived afterward from the predicted return using a cost-aware threshold. `BUY` / `HOLD` / `SELL` is not the supervised learning target.
 
 The feature set includes historical prices, technical indicators, benchmark market context, earnings features, and macro / alternative market data such as VIX, treasury yield proxy, and USD index.
 
@@ -119,9 +120,9 @@ Set `force_rebuild_dataset_cache: true` when tickers, dates, macro sources, thre
 
 ## Training
 
-### Train the LSTM
+### Train the LSTMRegressor
 
-This trains the LSTM model for the configured horizon set:
+This trains the LSTM regressor for the configured horizon set:
 
 ```bash
 python3 train.py
@@ -145,13 +146,13 @@ To train one horizon only:
 python3 train.py --horizon 21
 ```
 
-### Train the XGBoost model
+### Train the XGBoostRegressor
 
 ```bash
 python3 train_xgboost.py --horizon 21
 ```
 
-To train both model families for all configured horizons and save every horizon-specific checkpoint:
+To train both regression model families for all configured horizons and save every horizon-specific checkpoint:
 
 ```bash
 python3 train_all_models.py
@@ -203,7 +204,6 @@ Examples include:
 
 ```text
 models/stock_advanced_model_h21.pt
-models/xgboost_classifier_h21.joblib
 models/xgboost_regressor_h21.joblib
 models/model_metadata_h21.json
 reports/metrics_h21.json
@@ -222,10 +222,11 @@ reports/model_comparison_h21.md
 
 The backtest is intentionally simple and transparent for academic use:
 
-- Each prediction is treated as one simulated trading decision.
+- Each model predicts future return directly.
+- A cost-aware trade threshold converts predicted return into `BUY` / `HOLD` / `SELL`.
 - Transaction costs and slippage are subtracted from active trades.
 - Performance is reported against buy-and-hold.
-- The report includes alpha-style excess return, drawdown, Sharpe, Sortino, win rate, and average trade return.
+- The report includes total return, excess return, drawdown, Sharpe ratio, win rate, and trade count.
 
 ---
 
@@ -244,6 +245,12 @@ python3 predict.py --tickers AAPL,MSFT,NVDA --horizon 252
 ```
 
 ---
+
+The prediction output includes:
+
+- Predicted future return
+- Derived `BUY` / `HOLD` / `SELL` signal
+- Cost-aware trade threshold used to derive the signal
 
 ## Run the UI
 

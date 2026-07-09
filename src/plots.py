@@ -24,15 +24,27 @@ def plot_training_history(history: list[dict], output_dir: Path) -> None:
     plt.savefig(output_dir / "training_loss.png", dpi=160)
     plt.close()
 
-    plt.figure()
-    plt.plot(df["epoch"], df["validation_accuracy"], label="Validation accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.title("Validation Classification Accuracy")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_dir / "validation_accuracy.png", dpi=160)
-    plt.close()
+    if "validation_mae" in df.columns:
+        plt.figure()
+        plt.plot(df["epoch"], df["validation_mae"], label="Validation MAE")
+        plt.xlabel("Epoch")
+        plt.ylabel("MAE")
+        plt.title("Validation Mean Absolute Error")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(output_dir / "validation_mae.png", dpi=160)
+        plt.close()
+
+    if "validation_direction_accuracy" in df.columns:
+        plt.figure()
+        plt.plot(df["epoch"], df["validation_direction_accuracy"], label="Validation direction accuracy")
+        plt.xlabel("Epoch")
+        plt.ylabel("Direction accuracy")
+        plt.title("Validation Direction Accuracy")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(output_dir / "validation_direction_accuracy.png", dpi=160)
+        plt.close()
 
 
 def plot_backtest_equity(backtest_df: pd.DataFrame, output_dir: Path) -> None:

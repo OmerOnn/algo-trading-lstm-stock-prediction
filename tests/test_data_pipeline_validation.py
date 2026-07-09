@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
+from src.data_download import preload_training_data
 from src.features import (
     add_benchmark_features,
     add_labels,
@@ -13,11 +14,6 @@ from src.features import (
     add_technical_indicators,
     get_feature_columns,
 )
-<<<<<<< HEAD
-from src.data_download import preload_training_data
-=======
->>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
-from src.labeling import resolve_label_thresholds
 from src.pipeline import load_dataset_cache, save_dataset_cache
 
 
@@ -64,7 +60,7 @@ class DataPipelineValidationTest(unittest.TestCase):
         processed = add_labels(processed, horizon=10, buy_threshold=0.03, sell_threshold=-0.03)
 
         feature_columns = get_feature_columns(processed)
-        usable = processed.dropna(subset=feature_columns + ["future_return", "signal_label"]).copy()
+        usable = processed.dropna(subset=feature_columns + ["future_return"]).copy()
 
         coverage_years = (usable.index.max() - usable.index.min()).days / 365.25
         macro_columns = [column for column in feature_columns if column.startswith("macro_")]
@@ -73,7 +69,9 @@ class DataPipelineValidationTest(unittest.TestCase):
         self.assertGreaterEqual(len(macro_columns), 3)
         self.assertIn("benchmark_return_1d", feature_columns)
         self.assertFalse(usable[feature_columns].isna().any().any())
-        self.assertTrue(set(usable["signal_label"].unique()).issubset({0, 1, 2}))
+        self.assertFalse(usable["future_return"].isna().any())
+        self.assertGreater((usable["future_return"] > 0).sum(), 0)
+        self.assertGreater((usable["future_return"] < 0).sum(), 0)
         self.assertGreater(len(usable), 500)
 
     def test_inference_builds_features_for_unseen_ticker(self):
@@ -133,7 +131,7 @@ class DataPipelineValidationTest(unittest.TestCase):
         processed = add_technical_indicators(stock_df)
         processed = add_labels(processed, horizon=21, buy_threshold=0.03, sell_threshold=-0.03)
         feature_columns = get_feature_columns(processed)
-        usable = processed.dropna(subset=feature_columns + ["future_return", "signal_label"]).copy()
+        usable = processed.dropna(subset=feature_columns + ["future_return"]).copy()
 
         with TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "full_dataset_h21.csv"
@@ -149,27 +147,6 @@ class DataPipelineValidationTest(unittest.TestCase):
         self.assertEqual(len(usable), len(loaded))
         self.assertEqual(list(usable.columns), list(loaded.columns))
         self.assertEqual(loaded_metadata["prediction_horizon"], 21)
-
-    def test_horizon_scaled_thresholds_reduce_short_horizon_label_severity(self):
-        config = {
-            "buy_threshold": 0.03,
-            "sell_threshold": -0.03,
-            "default_prediction_horizon": 21,
-            "threshold_scaling": {
-                "enabled": True,
-                "mode": "sqrt_horizon",
-                "reference_horizon": 21,
-                "min_abs_threshold": 0.005,
-                "max_abs_threshold": 0.20,
-            },
-        }
-
-        buy_1, sell_1 = resolve_label_thresholds(config, 1)
-        buy_21, sell_21 = resolve_label_thresholds(config, 21)
-
-        self.assertLess(buy_1, buy_21)
-        self.assertGreater(sell_1, sell_21)
-<<<<<<< HEAD
 
     def test_preload_training_data_skips_unavailable_tickers_without_failing(self):
         def fake_download_price_data(ticker, start, end):
@@ -188,8 +165,6 @@ class DataPipelineValidationTest(unittest.TestCase):
                 end=None,
                 macro_tickers={},
             )
-=======
->>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
 
 
 if __name__ == "__main__":

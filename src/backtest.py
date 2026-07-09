@@ -5,24 +5,31 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.features import ID_TO_CLASS
-
 
 @dataclass
 class BacktestConfig:
     initial_cash: float = 10_000.0
     transaction_cost_pct: float = 0.001
     slippage_pct: float = 0.0005
-    min_signal_confidence: float = 0.45
     allow_short: bool = False
+    signal_threshold_multiplier: float = 1.0
+    min_signal_edge: float = 0.0
 
 
-def _signal_to_position(signal_id: int, confidence: float, cfg: BacktestConfig) -> int:
-    """Convert model class output to target position: 1 long, 0 cash, -1 short."""
-    if confidence < cfg.min_signal_confidence:
-        return 0
+def cost_aware_signal_threshold(cfg: BacktestConfig) -> float:
+    round_trip_cost = 2.0 * (cfg.transaction_cost_pct + cfg.slippage_pct)
+    return float(max(cfg.min_signal_edge, round_trip_cost * cfg.signal_threshold_multiplier))
 
-    signal = ID_TO_CLASS[int(signal_id)]
+
+def return_to_signal(predicted_return: float, threshold: float) -> str:
+    if predicted_return >= threshold:
+        return "BUY"
+    if predicted_return <= -threshold:
+        return "SELL"
+    return "HOLD"
+
+
+def signal_to_position(signal: str, cfg: BacktestConfig) -> int:
     if signal == "BUY":
         return 1
     if signal == "SELL":
@@ -32,28 +39,28 @@ def _signal_to_position(signal_id: int, confidence: float, cfg: BacktestConfig) 
 
 def build_signal_frame(
     metadata: list[dict],
-    true_class: np.ndarray,
-    predicted_class: np.ndarray,
     true_return: np.ndarray,
     predicted_return: np.ndarray,
-    probabilities: np.ndarray,
+    cfg: BacktestConfig,
 ) -> pd.DataFrame:
-    """Create a clean signal dataframe from model evaluation outputs."""
+    """Create a clean signal dataframe from regression outputs."""
+    threshold = cost_aware_signal_threshold(cfg)
     rows = []
     for i, meta in enumerate(metadata):
-        confidence = float(np.max(probabilities[i]))
+        predicted_value = float(predicted_return[i])
+        true_value = float(true_return[i])
+        predicted_signal = return_to_signal(predicted_value, threshold)
+        true_signal = return_to_signal(true_value, threshold)
         rows.append(
             {
                 "ticker": meta["ticker"],
                 "date": pd.to_datetime(meta["date"]),
-                "true_signal": ID_TO_CLASS[int(true_class[i])],
-                "predicted_signal": ID_TO_CLASS[int(predicted_class[i])],
-                "true_return": float(true_return[i]),
-                "predicted_return": float(predicted_return[i]),
-                "prob_sell": float(probabilities[i][0]),
-                "prob_hold": float(probabilities[i][1]),
-                "prob_buy": float(probabilities[i][2]),
-                "confidence": confidence,
+                "true_signal": true_signal,
+                "predicted_signal": predicted_signal,
+                "true_return": true_value,
+                "predicted_return": predicted_value,
+                "signal_threshold": threshold,
+                "signal_strength": 0.0 if threshold <= 0 else abs(predicted_value) / threshold,
             }
         )
     return pd.DataFrame(rows).sort_values(["ticker", "date"]).reset_index(drop=True)
@@ -70,11 +77,7 @@ def backtest_signals(signal_df: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.D
         raise ValueError("signal_df is empty. Cannot run backtest.")
 
     df = signal_df.copy().sort_values("date")
-    df["predicted_class_id"] = df["predicted_signal"].map({"SELL": 0, "HOLD": 1, "BUY": 2})
-    df["position"] = [
-        _signal_to_position(cls_id, confidence, cfg)
-        for cls_id, confidence in zip(df["predicted_class_id"], df["confidence"])
-    ]
+    df["position"] = [signal_to_position(signal, cfg) for signal in df["predicted_signal"]]
 
     round_trip_cost = 2 * (cfg.transaction_cost_pct + cfg.slippage_pct)
     df["strategy_return"] = df["position"] * df["true_return"]
@@ -87,7 +90,7 @@ def backtest_signals(signal_df: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.D
         .agg(
             strategy_return=("strategy_return", "mean"),
             active_trades=("position", lambda x: int(np.sum(np.asarray(x) != 0))),
-            average_confidence=("confidence", "mean"),
+            average_signal_strength=("signal_strength", "mean"),
             average_true_return=("true_return", "mean"),
         )
         .reset_index()

@@ -25,12 +25,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also run compare_results.py after both models finish for each trained horizon.",
     )
+    parser.add_argument(
+        "--horizons",
+        type=str,
+        default=None,
+        help="Comma-separated horizons to train, for example 21,252.",
+    )
     return parser.parse_args()
 
 
-def train_all_models(selected_horizon: int | None = None, compare: bool = False) -> list[int]:
+def train_all_models(
+    selected_horizon: int | None = None,
+    selected_horizons: list[int] | None = None,
+    compare: bool = False,
+) -> list[int]:
     config = load_config()
-    horizons = get_horizons(config, selected_horizon)
+    horizons = get_horizons(config, selected_horizon, selected_horizons)
     device_info = get_best_device(config.get("device", "auto"))
     xgb_device, xgb_backend_message = resolve_xgboost_backend(config)
 
@@ -82,7 +92,8 @@ def train_all_models(selected_horizon: int | None = None, compare: bool = False)
 
 def main() -> None:
     args = parse_args()
-    train_all_models(selected_horizon=args.horizon, compare=args.compare)
+    selected_horizons = parse_horizon_list(args.horizons)
+    train_all_models(selected_horizon=args.horizon, selected_horizons=selected_horizons, compare=args.compare)
 
 
 if __name__ == "__main__":

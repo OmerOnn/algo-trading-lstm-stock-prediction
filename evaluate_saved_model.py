@@ -44,10 +44,10 @@ def main() -> None:
     print("========================")
     print(f"Model: {metrics.get('model_name', args.model)}")
     print(f"Horizon: {metrics['prediction_horizon']} trading days")
-    print(f"Test accuracy: {metrics['test_metrics']['accuracy']:.4f}")
-    print(f"Test return MAE: {metrics['test_metrics']['return_mae']:.4f}")
-    print(f"Majority baseline accuracy: {metrics['baseline_metrics']['majority_class_accuracy']:.4f}")
-    print(f"SMA 20/50 baseline accuracy: {metrics['baseline_metrics']['sma_20_50_crossover_accuracy']:.4f}")
+    print(f"Test MAE: {metrics['test_metrics']['mae']:.4f}")
+    print(f"Test RMSE: {metrics['test_metrics']['rmse']:.4f}")
+    print(f"Direction accuracy: {metrics['test_metrics']['direction_accuracy']:.4f}")
+    print(f"Return correlation: {metrics['test_metrics']['return_correlation']:.4f}")
 
     print("\nBacktest Summary")
     print("================")
@@ -60,13 +60,14 @@ def main() -> None:
     print(f"Sharpe ratio: {bt['sharpe_ratio']:.4f}")
     print(f"Win rate: {bt.get('win_rate', 0.0) * 100:.2f}%")
     print(f"Active trades: {bt['number_of_active_trades']}")
-    print(f"Trade activation rate: {bt['trade_activation_rate'] * 100:.2f}%")
+    print(f"Trade threshold: {metrics.get('signal_threshold', 0.0) * 100:.2f}%")
 
     if predictions_path.exists():
         preds = pd.read_csv(predictions_path)
-        print("\nSignal Distribution")
-        print("===================")
-        print(preds["predicted_signal"].value_counts().to_string())
+        if "predicted_signal" in preds.columns:
+            print("\nSignal Distribution")
+            print("===================")
+            print(preds["predicted_signal"].value_counts().to_string())
 
     if backtest_path.exists():
         print(f"\nDetailed backtest file: {backtest_path}")

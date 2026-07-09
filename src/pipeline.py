@@ -153,9 +153,8 @@ def build_dataset_for_tickers(
     feature_columns = get_feature_columns(full_df)
 
     # Keep only rows that are usable for training.
-    full_df = full_df.dropna(subset=feature_columns + ["future_return", "signal_label"]).copy()
+    full_df = full_df.dropna(subset=feature_columns + ["future_return"]).copy()
     full_df[feature_columns] = full_df[feature_columns].astype(float)
-    full_df["signal_label"] = full_df["signal_label"].astype(int)
     full_df["future_return"] = full_df["future_return"].astype(float)
 
     return full_df, feature_columns

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shutil
 import warnings
-from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 
@@ -180,7 +179,6 @@ def preload_training_data(
     print("Preloading shared market data into memory cache...")
     all_price_tickers = [benchmark_ticker, *tickers]
     for ticker in all_price_tickers:
-<<<<<<< HEAD
         try:
             download_price_data(ticker, start, end)
         except Exception as exc:
@@ -196,12 +194,3 @@ def preload_training_data(
         except Exception as exc:
             print(f"Warning: preload skipped earnings data for {ticker}: {exc}")
     print("Shared market data cache is ready.")
-=======
-        download_price_data(ticker, start, end)
-    if macro_tickers:
-        download_macro_data(macro_tickers, start, end)
-    for ticker in tickers:
-        download_earnings_data(ticker, limit=earnings_limit)
-    print("Shared market data cache is ready.")
-
->>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6

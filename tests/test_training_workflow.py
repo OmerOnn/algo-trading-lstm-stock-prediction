@@ -20,13 +20,6 @@ class TrainingWorkflowTest(unittest.TestCase):
         device_info = type(
             "DeviceInfoStub",
             (),
-<<<<<<< HEAD
-            {"device": type("DeviceStub", (), {"type": "mps", "__str__": lambda self: "mps"})(), "device_name": "Apple Silicon GPU", "accelerator": "MPS / Apple Metal GPU"},
-        )()
-
-        with patch("train_all_models.load_config", return_value=config), patch(
-            "train_all_models.get_best_device", return_value=device_info
-=======
             {
                 "device": type("DeviceStub", (), {"type": "mps", "__str__": lambda self: "mps"})(),
                 "device_name": "Apple Silicon GPU",
@@ -37,7 +30,6 @@ class TrainingWorkflowTest(unittest.TestCase):
         with patch("train_all_models.load_config", return_value=config), patch(
             "train_all_models.get_best_device",
             return_value=device_info,
->>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
         ), patch(
             "train_all_models.resolve_xgboost_backend",
             return_value=("cpu", "Apple Metal GPU is not supported by XGBoost, so it is running on CPU."),
@@ -68,13 +60,6 @@ class TrainingWorkflowTest(unittest.TestCase):
         device_info = type(
             "DeviceInfoStub",
             (),
-<<<<<<< HEAD
-            {"device": type("DeviceStub", (), {"type": "cpu", "__str__": lambda self: "cpu"})(), "device_name": "CPU", "accelerator": "CPU"},
-        )()
-
-        with patch("train_all_models.load_config", return_value=config), patch(
-            "train_all_models.get_best_device", return_value=device_info
-=======
             {
                 "device": type("DeviceStub", (), {"type": "cpu", "__str__": lambda self: "cpu"})(),
                 "device_name": "CPU",
@@ -85,7 +70,6 @@ class TrainingWorkflowTest(unittest.TestCase):
         with patch("train_all_models.load_config", return_value=config), patch(
             "train_all_models.get_best_device",
             return_value=device_info,
->>>>>>> 40d280603dc3a6dd11e896c7df67a0c1de9cb7b6
         ), patch(
             "train_all_models.resolve_xgboost_backend",
             return_value=("cuda", "CUDA GPU acceleration is active for XGBoost."),
@@ -98,6 +82,45 @@ class TrainingWorkflowTest(unittest.TestCase):
 
         self.assertEqual(horizons, [5])
         compare_results_main.assert_called_once()
+
+    def test_trains_multiple_selected_horizons(self):
+        config = {
+            "prediction_horizons": [1, 5, 21, 252],
+            "prediction_horizon": 21,
+            "device": "cpu",
+            "tickers": ["AAPL"],
+            "benchmark_ticker": "SPY",
+            "start_date": "2018-01-01",
+            "end_date": None,
+            "macro_tickers": {},
+        }
+
+        device_info = type(
+            "DeviceInfoStub",
+            (),
+            {
+                "device": type("DeviceStub", (), {"type": "cpu", "__str__": lambda self: "cpu"})(),
+                "device_name": "CPU",
+                "accelerator": "CPU",
+            },
+        )()
+
+        with patch("train_all_models.load_config", return_value=config), patch(
+            "train_all_models.get_best_device",
+            return_value=device_info,
+        ), patch(
+            "train_all_models.resolve_xgboost_backend",
+            return_value=("cpu", "XGBoost is configured to run on CPU."),
+        ), patch("train_all_models.preload_training_data"), patch(
+            "train_all_models.train_lstm_models_for_horizons"
+        ) as train_lstm_models_for_horizons, patch(
+            "train_all_models.train_xgboost_models_for_horizons"
+        ) as train_xgboost_models_for_horizons:
+            horizons = train_all_models(selected_horizons=[21, 252])
+
+        self.assertEqual(horizons, [21, 252])
+        train_lstm_models_for_horizons.assert_called_once_with(config, [21, 252])
+        train_xgboost_models_for_horizons.assert_called_once_with(config, [21, 252])
 
 
 if __name__ == "__main__":

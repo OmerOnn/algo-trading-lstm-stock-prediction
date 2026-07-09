@@ -15,18 +15,17 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent
 
 METRIC_SPECS = [
-    ("accuracy", ("test_metrics", "accuracy"), True),
-    ("return_mae", ("test_metrics", "return_mae"), False),
+    ("mae", ("test_metrics", "mae"), False),
+    ("rmse", ("test_metrics", "rmse"), False),
+    ("direction_accuracy", ("test_metrics", "direction_accuracy"), True),
+    ("return_correlation", ("test_metrics", "return_correlation"), True),
     ("total_return", ("backtest_metrics", "total_return"), True),
     ("buy_and_hold_total_return", ("backtest_metrics", "buy_and_hold_total_return"), True),
     ("excess_return_vs_buy_hold", ("backtest_metrics", "excess_return_vs_buy_hold"), True),
     ("max_drawdown", ("backtest_metrics", "max_drawdown"), False),
     ("sharpe_ratio", ("backtest_metrics", "sharpe_ratio"), True),
-    ("sortino_ratio", ("backtest_metrics", "sortino_ratio"), True),
     ("win_rate", ("backtest_metrics", "win_rate"), True),
-    ("average_trade_return", ("backtest_metrics", "average_trade_return"), True),
     ("number_of_active_trades", ("backtest_metrics", "number_of_active_trades"), True),
-    ("trade_activation_rate", ("backtest_metrics", "trade_activation_rate"), True),
     ("feature_count", ("feature_count",), True),
 ]
 
@@ -96,7 +95,7 @@ def write_markdown_report(df: pd.DataFrame, horizon: int, output_path: Path) -> 
     markdown = [
         f"# Model Comparison - Horizon {horizon}",
         "",
-        "This report compares the saved LSTM and XGBoost artifacts using the same chronological split and backtest settings.",
+        "This report compares the saved LSTMRegressor and XGBoostRegressor artifacts using the same chronological split and cost-aware trading rule.",
         "",
         table,
         "",

@@ -196,17 +196,10 @@ def add_labels(
     buy_threshold: float,
     sell_threshold: float,
 ) -> pd.DataFrame:
-    """Create future return regression target and BUY/HOLD/SELL classification target."""
+    """Create the future return regression target."""
     out = df.copy()
     close = out["Adj Close"].astype(float)
     out["future_return"] = close.shift(-horizon) / close - 1.0
-
-    conditions = [
-        out["future_return"] <= sell_threshold,
-        out["future_return"] >= buy_threshold,
-    ]
-    choices = [CLASS_TO_ID["SELL"], CLASS_TO_ID["BUY"]]
-    out["signal_label"] = np.select(conditions, choices, default=CLASS_TO_ID["HOLD"])
     return out
 
 

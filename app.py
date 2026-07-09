@@ -10,12 +10,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from predict import (  # noqa: E402
-    get_available_horizons,
-    load_config,
-    load_model_and_metadata,
-    predict_ticker_with_artifacts,
-)
+from predict import get_available_horizons, load_config, load_model_and_metadata, predict_ticker_with_artifacts  # noqa: E402
 
 
 HORIZON_LABELS = {
@@ -42,21 +37,21 @@ SIGNAL_STYLE = {
         "css": "buy-card",
         "pill": "buy-pill",
         "tone": "Positive signal",
-        "explain": "The model detected a stronger upside scenario for the selected horizon.",
+        "explain": "The predicted future return is high enough to clear the cost-aware trade threshold.",
     },
     "HOLD": {
         "emoji": "⏸️",
         "css": "hold-card",
         "pill": "hold-pill",
         "tone": "Neutral signal",
-        "explain": "The model did not detect a strong enough directional signal.",
+        "explain": "The predicted future return does not clear the cost-aware trade threshold.",
     },
     "SELL": {
         "emoji": "📉",
         "css": "sell-card",
         "pill": "sell-pill",
         "tone": "Negative signal",
-        "explain": "The model detected a stronger downside scenario for the selected horizon.",
+        "explain": "The predicted future return is negative enough to clear the cost-aware trade threshold.",
     },
 }
 
@@ -82,177 +77,35 @@ def inject_css() -> None:
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
-
-        html, body, [class*="css"] {
-            font-family: 'Inter', sans-serif;
-        }
-
-        .block-container {
-            padding-top: 2rem;
-            padding-bottom: 3rem;
-            max-width: 1280px;
-        }
-
-        section[data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #0f172a 0%, #111827 52%, #020617 100%);
-        }
-
-        section[data-testid="stSidebar"] * {
-            color: #e5e7eb !important;
-        }
-
-        .hero {
-            border-radius: 30px;
-            padding: 2rem;
-            background: radial-gradient(circle at top left, #dbeafe 0%, #eff6ff 28%, #f8fafc 70%);
-            border: 1px solid #dbeafe;
-            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
-            margin-bottom: 1.4rem;
-        }
-
-        .hero-title {
-            font-size: 2.7rem;
-            font-weight: 950;
-            letter-spacing: -0.055em;
-            color: #0f172a;
-            margin-bottom: 0.55rem;
-        }
-
-        .hero-subtitle {
-            color: #475569;
-            font-size: 1.05rem;
-            line-height: 1.6;
-            font-weight: 650;
-            max-width: 950px;
-        }
-
-        .section-title {
-            font-size: 1.55rem;
-            font-weight: 900;
-            letter-spacing: -0.03em;
-            color: #0f172a;
-            margin: 1.3rem 0 0.8rem 0;
-        }
-
-        .signal-card {
-            border-radius: 26px;
-            padding: 1.35rem 1.45rem;
-            margin-bottom: 1rem;
-            border: 1px solid rgba(148, 163, 184, 0.25);
-            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.09);
-            background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,252,0.94));
-        }
-
+        html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+        .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1280px; }
+        section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #111827 52%, #020617 100%); }
+        section[data-testid="stSidebar"] * { color: #e5e7eb !important; }
+        .hero { border-radius: 30px; padding: 2rem; background: radial-gradient(circle at top left, #dbeafe 0%, #eff6ff 28%, #f8fafc 70%); border: 1px solid #dbeafe; box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08); margin-bottom: 1.4rem; }
+        .hero-title { font-size: 2.7rem; font-weight: 950; letter-spacing: -0.055em; color: #0f172a; margin-bottom: 0.55rem; }
+        .hero-subtitle { color: #475569; font-size: 1.05rem; line-height: 1.6; font-weight: 650; max-width: 950px; }
+        .section-title { font-size: 1.55rem; font-weight: 900; letter-spacing: -0.03em; color: #0f172a; margin: 1.3rem 0 0.8rem 0; }
+        .signal-card { border-radius: 26px; padding: 1.35rem 1.45rem; margin-bottom: 1rem; border: 1px solid rgba(148, 163, 184, 0.25); box-shadow: 0 18px 45px rgba(15, 23, 42, 0.09); background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,252,0.94)); }
         .buy-card { border-left: 9px solid #16a34a; }
         .hold-card { border-left: 9px solid #ca8a04; }
         .sell-card { border-left: 9px solid #dc2626; }
-
-        .ticker-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1rem;
-        }
-
-        .ticker-name {
-            font-size: 2rem;
-            font-weight: 950;
-            color: #0f172a;
-            letter-spacing: -0.04em;
-        }
-
-        .signal-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            border-radius: 999px;
-            padding: 0.55rem 1rem;
-            font-weight: 950;
-            color: white;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.16);
-        }
-
+        .ticker-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+        .ticker-name { font-size: 2rem; font-weight: 950; color: #0f172a; letter-spacing: -0.04em; }
+        .signal-pill { display: inline-flex; align-items: center; gap: 0.35rem; border-radius: 999px; padding: 0.55rem 1rem; font-weight: 950; color: white; box-shadow: 0 10px 22px rgba(15,23,42,0.16); }
         .buy-pill { background: #16a34a; }
         .hold-pill { background: #ca8a04; }
         .sell-pill { background: #dc2626; }
-
-        .latest-date {
-            color: #64748b;
-            font-weight: 800;
-            margin-top: -0.2rem;
-            margin-bottom: 1rem;
-        }
-
-        .mini-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 0.8rem;
-            margin-top: 1rem;
-        }
-
-        .mini-box {
-            background: #f1f5f9;
-            border-radius: 18px;
-            padding: 0.95rem 1rem;
-            border: 1px solid #e2e8f0;
-        }
-
-        .mini-label {
-            font-size: 0.72rem;
-            font-weight: 900;
-            color: #64748b;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            margin-bottom: 0.35rem;
-        }
-
-        .mini-value {
-            font-size: 1rem;
-            font-weight: 950;
-            color: #0f172a;
-        }
-
+        .latest-date { color: #64748b; font-weight: 800; margin-top: -0.2rem; margin-bottom: 1rem; }
+        .mini-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.8rem; margin-top: 1rem; }
+        .mini-box { background: #f1f5f9; border-radius: 18px; padding: 0.95rem 1rem; border: 1px solid #e2e8f0; }
+        .mini-label { font-size: 0.72rem; font-weight: 900; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.35rem; }
+        .mini-value { font-size: 1rem; font-weight: 950; color: #0f172a; }
         .positive { color: #16a34a; }
         .negative { color: #dc2626; }
         .neutral { color: #ca8a04; }
-
-        .info-box {
-            border-radius: 18px;
-            padding: 1rem 1.1rem;
-            background: #eff6ff;
-            border: 1px solid #bfdbfe;
-            color: #1e3a8a;
-            font-weight: 750;
-            margin-bottom: 1rem;
-        }
-
-        .warning-box {
-            border-radius: 18px;
-            padding: 1rem 1.1rem;
-            background: #fff7ed;
-            border: 1px solid #fed7aa;
-            color: #9a3412;
-            font-weight: 750;
-            margin-bottom: 1rem;
-        }
-
-        div[data-testid="stTextArea"] textarea {
-            border-radius: 18px;
-            border: 1px solid #cbd5e1;
-            background: #f8fafc;
-            font-weight: 700;
-            font-size: 1rem;
-        }
-
-        div.stButton > button:first-child {
-            border-radius: 16px;
-            background: linear-gradient(90deg, #ef4444, #f97316);
-            color: white;
-            border: none;
-            font-weight: 950;
-            height: 3.05rem;
-            box-shadow: 0 14px 30px rgba(239, 68, 68, 0.22);
-        }
+        .info-box { border-radius: 18px; padding: 1rem 1.1rem; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; font-weight: 750; margin-bottom: 1rem; }
+        div[data-testid="stTextArea"] textarea { border-radius: 18px; border: 1px solid #cbd5e1; background: #f8fafc; font-weight: 700; font-size: 1rem; }
+        div.stButton > button:first-child { border-radius: 16px; background: linear-gradient(90deg, #ef4444, #f97316); color: white; border: none; font-weight: 950; height: 3.05rem; box-shadow: 0 14px 30px rgba(239, 68, 68, 0.22); }
         </style>
         """,
         unsafe_allow_html=True,
@@ -267,19 +120,12 @@ def return_class(value: float) -> str:
     return "neutral"
 
 
-def probability_chart(result: dict) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "Signal": ["BUY", "HOLD", "SELL"],
-            "Probability": [result["prob_buy"], result["prob_hold"], result["prob_sell"]],
-        }
-    )
-
-
 def render_signal_card(result: dict) -> None:
     signal = result["signal"]
     style = SIGNAL_STYLE[signal]
     expected = float(result["expected_return_pct"])
+    threshold = float(result["signal_threshold_pct"])
+    signal_strength = float(result["signal_strength"])
     return_css = return_class(expected)
 
     st.markdown(
@@ -294,12 +140,16 @@ def render_signal_card(result: dict) -> None:
             </div>
             <div class="mini-grid">
                 <div class="mini-box">
-                    <div class="mini-label">Expected Movement</div>
+                    <div class="mini-label">Predicted Return</div>
                     <div class="mini-value {return_css}">{expected:.2f}%</div>
                 </div>
                 <div class="mini-box">
-                    <div class="mini-label">Confidence</div>
-                    <div class="mini-value">{result['confidence'] * 100:.2f}%</div>
+                    <div class="mini-label">Trade Threshold</div>
+                    <div class="mini-value">{threshold:.2f}%</div>
+                </div>
+                <div class="mini-box">
+                    <div class="mini-label">Signal Strength</div>
+                    <div class="mini-value">{signal_strength:.2f}x</div>
                 </div>
                 <div class="mini-box">
                     <div class="mini-label">Prediction Horizon</div>
@@ -314,11 +164,7 @@ def render_signal_card(result: dict) -> None:
 
 
 def main() -> None:
-    st.set_page_config(
-        page_title="Algo Trading Stock Predictor",
-        page_icon="📊",
-        layout="wide",
-    )
+    st.set_page_config(page_title="Algo Trading Stock Predictor", page_icon="📊", layout="wide")
     inject_css()
 
     config = load_config()
@@ -347,7 +193,7 @@ def main() -> None:
             <div class="hero-title">Algo Trading Stock Predictor</div>
             <div class="hero-subtitle">
                 Enter one or more stock tickers, choose how many trading days ahead to predict,
-                and view the model's simulated BUY / HOLD / SELL signal with confidence and expected movement.
+                and view the model's predicted future return together with the derived BUY / HOLD / SELL signal.
             </div>
         </div>
         """,
@@ -372,7 +218,8 @@ def main() -> None:
     st.markdown(
         f"""
         <div class="info-box">
-            The model will predict {format_horizon(int(selected_horizon))} ahead using the latest available market data.
+            The model predicts {format_horizon(int(selected_horizon))} future return first.
+            The displayed BUY / HOLD / SELL signal is derived afterward using a cost-aware threshold.
         </div>
         """,
         unsafe_allow_html=True,
@@ -384,13 +231,10 @@ def main() -> None:
         st.markdown("### What the dashboard shows")
         st.markdown(
             """
-            - **Signal**: the predicted action class: BUY, HOLD, or SELL.
-            - **Expected Movement**: the model's estimated percentage movement for the selected horizon.
-            - **Confidence**: the highest probability assigned by the classifier.
-            - **Class Probabilities**: the model's probability distribution across BUY, HOLD, and SELL.
-
-            The displayed expected movement is aligned with the selected signal so the UI stays consistent. For example,
-            a SELL signal is displayed as a negative expected movement.
+            - **Predicted Return**: the model's estimated percentage return for the selected horizon.
+            - **Signal**: BUY, HOLD, or SELL derived from the predicted return using a cost-aware rule.
+            - **Trade Threshold**: the return hurdle required before the strategy becomes active.
+            - **Signal Strength**: how far the predicted return is beyond the trade threshold.
             """
         )
 
@@ -436,7 +280,6 @@ def main() -> None:
 
         for error in errors:
             st.warning(error)
-
         if not results:
             st.error("No predictions were generated.")
             return
@@ -447,11 +290,9 @@ def main() -> None:
                 {
                     "Ticker": result["ticker"],
                     "Signal": result["signal"],
-                    "Expected Movement (%)": round(result["expected_return_pct"], 2),
-                    "Confidence": f"{result['confidence'] * 100:.2f}%",
-                    "BUY Probability": f"{result['prob_buy'] * 100:.2f}%",
-                    "HOLD Probability": f"{result['prob_hold'] * 100:.2f}%",
-                    "SELL Probability": f"{result['prob_sell'] * 100:.2f}%",
+                    "Predicted Return (%)": round(result["expected_return_pct"], 2),
+                    "Trade Threshold (%)": round(result["signal_threshold_pct"], 2),
+                    "Signal Strength": round(result["signal_strength"], 2),
                     "Latest Data Date": result["latest_data_date"],
                     "Horizon": result["prediction_horizon_trading_days"],
                 }
@@ -471,7 +312,6 @@ def main() -> None:
         st.markdown('<div class="section-title">Detailed Results</div>', unsafe_allow_html=True)
         for result in results:
             render_signal_card(result)
-            st.bar_chart(probability_chart(result), x="Signal", y="Probability", use_container_width=True)
 
 
 if __name__ == "__main__":

@@ -4,12 +4,8 @@ import torch
 import torch.nn as nn
 
 
-class StockSignalModel(nn.Module):
-    """
-    Multi-task model:
-    1. Classification: SELL / HOLD / BUY
-    2. Regression: expected future return percentage
-    """
+class StockReturnPredictor(nn.Module):
+    """Sequence model that predicts future return directly."""
 
     def __init__(
         self,
@@ -40,14 +36,10 @@ class StockSignalModel(nn.Module):
             nn.Dropout(dropout),
         )
 
-        self.class_head = nn.Linear(hidden_size, 3)
         self.return_head = nn.Linear(hidden_size, 1)
 
     def forward(self, x: torch.Tensor):
         rnn_out, _ = self.rnn(x)
         last_hidden = rnn_out[:, -1, :]
         features = self.shared(last_hidden)
-
-        class_logits = self.class_head(features)
-        predicted_return = self.return_head(features).squeeze(-1)
-        return class_logits, predicted_return
+        return self.return_head(features).squeeze(-1)
