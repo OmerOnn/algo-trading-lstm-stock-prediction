@@ -1,3 +1,12 @@
+"""
+Inference: predict the expected future return of one or more tickers.
+
+Every prediction carries an uncertainty range. The point forecast alone is not
+actionable for equity returns, where the irreducible noise is an order of
+magnitude larger than any attainable edge; the interval is what tells the user
+whether the number means anything.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,16 +19,20 @@ import pandas as pd
 import torch
 import yaml
 
-from src.backtest import BacktestConfig, cost_aware_signal_threshold, return_to_signal
+from src.backtest import BacktestConfig, cost_aware_signal_threshold
 from src.data_download import download_earnings_data, download_macro_data, download_price_data
+from src.decision import DecisionConfig, decide, direction_probability
 from src.device import get_best_device
 from src.features import (
     add_benchmark_features,
-    add_earnings_features,
     add_macro_features,
+    add_earnings_features,
+    add_regime_normalized_features,
     add_technical_indicators,
 )
 from src.model import StockReturnPredictor
+from src.regression import apply_return_calibration, resolve_target_config, target_scale
+from src.uncertainty import IntervalCalibration, describe_confidence, mc_dropout_predict
 
 
 ROOT = Path(__file__).resolve().parent
@@ -31,9 +44,32 @@ def load_config(path: str = "configs/config.yaml") -> dict:
 
 
 def get_available_horizons(config: dict) -> list[int]:
+    model_base = Path(config["model_output_path"])
+    scaler_base = Path(config["scaler_output_path"])
+    metadata_base = Path(config["metadata_output_path"])
+    discovered: list[int] = []
+    for model_path in (ROOT / model_base.parent).glob(f"{model_base.stem}_h*{model_base.suffix}"):
+        raw_horizon = model_path.stem.rsplit("_h", 1)[-1]
+        if not raw_horizon.isdigit():
+            continue
+        horizon = int(raw_horizon)
+        scaler_path = ROOT / scaler_base.with_name(f"{scaler_base.stem}_h{horizon}{scaler_base.suffix}")
+        metadata_path = ROOT / metadata_base.with_name(
+            f"{metadata_base.stem}_h{horizon}{metadata_base.suffix}"
+        )
+        if scaler_path.exists() and metadata_path.exists():
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as file:
+                    metadata = json.load(file)
+                if int(metadata.get("artifact_schema_version", 1)) >= 3:
+                    discovered.append(horizon)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+    if discovered:
+        return sorted(set(discovered))
     if "prediction_horizons" in config and config["prediction_horizons"]:
         return [int(h) for h in config["prediction_horizons"]]
-    return [int(config.get("prediction_horizon", 10))]
+    return [int(config.get("prediction_horizon", 21))]
 
 
 def artifact_path(base_path: str | Path, horizon: int) -> Path:
@@ -49,13 +85,15 @@ def resolve_artifact_paths(config: dict, horizon: int) -> tuple[Path, Path, Path
     if model_path.exists() and scaler_path.exists() and metadata_path.exists():
         return model_path, scaler_path, metadata_path
 
-    default_horizon = int(config.get("default_prediction_horizon", config.get("prediction_horizon", 10)))
+    default_horizon = int(config.get("default_prediction_horizon", config.get("prediction_horizon", 21)))
     if horizon == default_horizon:
-        fallback_model = ROOT / config["model_output_path"]
-        fallback_scaler = ROOT / config["scaler_output_path"]
-        fallback_metadata = ROOT / config["metadata_output_path"]
-        if fallback_model.exists() and fallback_scaler.exists() and fallback_metadata.exists():
-            return fallback_model, fallback_scaler, fallback_metadata
+        fallback = (
+            ROOT / config["model_output_path"],
+            ROOT / config["scaler_output_path"],
+            ROOT / config["metadata_output_path"],
+        )
+        if all(path.exists() for path in fallback):
+            return fallback
 
     raise FileNotFoundError(
         f"No trained model artifacts were found for horizon={horizon}. "
@@ -70,14 +108,30 @@ def build_latest_features(ticker: str, config: dict, feature_columns: list[str],
     if config.get("macro_tickers"):
         macro_df = download_macro_data(config["macro_tickers"], config["start_date"], config["end_date"])
 
-    earnings_df = download_earnings_data(ticker)
     df = add_technical_indicators(price_df)
     df = add_benchmark_features(df, benchmark_df)
     df = add_macro_features(df, macro_df)
-    df = add_earnings_features(df, earnings_df)
+    earnings_feature_names = {
+        "is_earnings_day",
+        "is_near_earnings",
+        "days_since_earnings",
+        "days_to_earnings",
+        "eps_estimate",
+        "reported_eps",
+        "eps_surprise_pct",
+    }
+    if bool(config.get("use_earnings_features", False)) or earnings_feature_names.intersection(feature_columns):
+        df = add_earnings_features(df, download_earnings_data(ticker))
+    df = add_regime_normalized_features(df, window=int(config.get("regime_normalization_window", 252)))
     df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=feature_columns).copy()
-    return df
+
+    missing = [column for column in feature_columns if column not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Feature engineering did not produce {len(missing)} required columns for {ticker}: "
+            f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
+        )
+    return df.dropna(subset=feature_columns).copy()
 
 
 def build_backtest_config(config: dict) -> BacktestConfig:
@@ -91,8 +145,25 @@ def build_backtest_config(config: dict) -> BacktestConfig:
     )
 
 
+def build_decision_config(config: dict, metadata: dict) -> DecisionConfig:
+    """Rebuild the validation-frozen decision rule stored with the model."""
+    stored = metadata.get("decision_rule") or {}
+    fallback_threshold = cost_aware_signal_threshold(build_backtest_config(config))
+    return DecisionConfig(
+        rule=str(stored.get("rule", config.get("decision", {}).get("rule", "risk_adjusted"))),
+        threshold=float(stored.get("threshold", fallback_threshold)),
+        min_z_score=float(stored.get("min_z_score", 0.15)),
+        allow_short=bool(stored.get("allow_short", config.get("allow_short", False))),
+        min_direction_probability=float(stored.get("min_direction_probability", 0.0)),
+        position_sizing=str(stored.get("position_sizing", "binary")),
+    )
+
+
 def load_model_and_metadata(config: dict, horizon: int | None = None):
-    selected_horizon = int(horizon or config.get("default_prediction_horizon", config.get("prediction_horizon", 10)))
+    """Load the ensemble, the scaler and every calibration needed at inference."""
+    selected_horizon = int(
+        horizon or config.get("default_prediction_horizon", config.get("prediction_horizon", 21))
+    )
     model_path, scaler_path, metadata_path = resolve_artifact_paths(config, selected_horizon)
 
     with open(metadata_path, "r", encoding="utf-8") as file:
@@ -103,15 +174,26 @@ def load_model_and_metadata(config: dict, horizon: int | None = None):
     device_info = get_best_device(config.get("device", "auto"))
     device = device_info.device
 
-    model = StockReturnPredictor(
-        input_size=len(feature_columns),
-        hidden_size=int(metadata["hidden_size"]),
-        num_layers=int(metadata["num_layers"]),
-        dropout=float(metadata["dropout"]),
-        model_type=str(metadata.get("model_type", config.get("model_type", "lstm"))),
-    ).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    state_dicts = (
+        checkpoint["ensemble_state_dicts"]
+        if isinstance(checkpoint, dict) and "ensemble_state_dicts" in checkpoint
+        else [checkpoint]
+    )
+
+    models = []
+    for state_dict in state_dicts:
+        model = StockReturnPredictor(
+            input_size=len(feature_columns),
+            hidden_size=int(metadata["hidden_size"]),
+            num_layers=int(metadata["num_layers"]),
+            dropout=float(metadata["dropout"]),
+            model_type=str(metadata.get("model_type", config.get("model_type", "lstm"))),
+            input_dropout=float(metadata.get("input_dropout", 0.10)),
+        ).to(device)
+        model.load_state_dict(state_dict)
+        model.eval()
+        models.append(model)
 
     metadata["runtime_device"] = str(device)
     metadata["runtime_accelerator"] = device_info.accelerator
@@ -119,65 +201,135 @@ def load_model_and_metadata(config: dict, horizon: int | None = None):
     metadata["artifact_model_path"] = str(model_path)
     metadata["artifact_scaler_path"] = str(scaler_path)
     metadata["artifact_metadata_path"] = str(metadata_path)
-    return model, metadata, scaler, feature_columns, device
+    return models, metadata, scaler, feature_columns, device
 
 
 def predict_ticker_with_artifacts(
     ticker: str,
     config: dict,
-    model: StockReturnPredictor,
+    model,
     metadata: dict,
     scaler,
     feature_columns: list[str],
     device: torch.device,
     horizon: int | None = None,
 ) -> dict:
-    selected_horizon = int(horizon or metadata.get("prediction_horizon", config.get("prediction_horizon", 10)))
+    """
+    Produce the full prediction record for one ticker.
+
+    ``model`` accepts either a single module or the ensemble list returned by
+    :func:`load_model_and_metadata`.
+    """
+    models = model if isinstance(model, (list, tuple)) else [model]
+    selected_horizon = int(
+        horizon or metadata.get("prediction_horizon", config.get("prediction_horizon", 21))
+    )
+
     df = build_latest_features(ticker, config, feature_columns, selected_horizon)
-    if len(df) < int(metadata["window_size"]):
-        raise ValueError("Not enough valid rows for prediction after feature engineering.")
+    window_size = int(metadata["window_size"])
+    if len(df) < window_size:
+        raise ValueError(
+            f"Only {len(df)} usable rows after feature engineering; {window_size} are required."
+        )
 
     df_scaled = df.copy()
     df_scaled[feature_columns] = scaler.transform(df_scaled[feature_columns])
-    latest_window = df_scaled[feature_columns].tail(int(metadata["window_size"])).values.astype(np.float32)
+    latest_window = df_scaled[feature_columns].tail(window_size).to_numpy(dtype=np.float32)
     x = torch.tensor(latest_window, dtype=torch.float32).unsqueeze(0)
 
-    with torch.no_grad():
-        predicted_return = float(model(x.to(device, non_blocking=(device.type == "cuda"))).cpu().numpy()[0])
+    # Monte Carlo dropout across every ensemble member. Combined with the law of
+    # total variance this gives the same epistemic estimate used at training time.
+    passes = int(metadata.get("mc_dropout_passes", 30))
+    member_means, member_variances = [], []
+    for member in models:
+        mean, std = mc_dropout_predict(member, x, passes=max(passes, 20), device=device)
+        member_means.append(float(mean[0]))
+        member_variances.append(float(std[0]) ** 2)
 
-    backtest_cfg = build_backtest_config(config)
-    signal_threshold = cost_aware_signal_threshold(backtest_cfg)
-    predicted_signal = return_to_signal(predicted_return, signal_threshold)
+    means = np.asarray(member_means, dtype=float)
+    scaled_mean = float(means.mean())
+    within = float(np.mean(member_variances))
+    between = float(means.var(ddof=1)) if len(means) > 1 else 0.0
+    scaled_model_std = float(np.sqrt(within + between))
+
+    target_configuration = resolve_target_config(
+        metadata.get("target_configuration", {"mode": "raw_return"})
+    )
+    latest_scale = float(target_scale(df.tail(1), selected_horizon, target_configuration)[0])
+
+    component_return = float(
+        apply_return_calibration(
+            np.asarray([scaled_mean * latest_scale]), metadata.get("return_calibration")
+        )[0]
+    )
+    model_std = scaled_model_std * latest_scale
+
+    interval_calibration = IntervalCalibration.from_dict(metadata.get("interval_calibration"))
+    lower_component, upper_component, sigma = interval_calibration.interval(
+        np.asarray([component_return]), np.asarray([model_std]), np.asarray([latest_scale])
+    )
+
+    market_drift = float((metadata.get("market_drift") or {}).get("market_drift", 0.0))
+    expected_return = component_return + market_drift
+    lower = float(lower_component[0]) + market_drift
+    upper = float(upper_component[0]) + market_drift
+    sigma_value = float(sigma[0])
+
+    decision_cfg = build_decision_config(config, metadata)
+    signal = decide(expected_return, sigma_value, decision_cfg)
+    confidence = describe_confidence(expected_return, sigma_value)
 
     return {
         "ticker": ticker,
         "latest_data_date": str(df.index[-1].date()),
         "prediction_horizon_trading_days": selected_horizon,
-        "signal": predicted_signal,
-        "predicted_return": predicted_return,
-        "expected_return": predicted_return,
-        "expected_return_pct": predicted_return * 100.0,
-        "signal_threshold": signal_threshold,
-        "signal_threshold_pct": signal_threshold * 100.0,
-        "signal_strength": 0.0 if signal_threshold <= 0 else abs(predicted_return) / signal_threshold,
+        "signal": signal,
+        # Point forecast, in return units and percent.
+        "expected_return": expected_return,
+        "expected_return_pct": expected_return * 100.0,
+        "predicted_return": expected_return,
+        # Decomposition: what the model contributes versus the market baseline.
+        "market_drift": market_drift,
+        "market_drift_pct": market_drift * 100.0,
+        "model_excess_return": component_return,
+        "model_excess_return_pct": component_return * 100.0,
+        # Uncertainty.
+        "confidence_level": float(interval_calibration.confidence_level),
+        "lower_bound": lower,
+        "lower_bound_pct": lower * 100.0,
+        "upper_bound": upper,
+        "upper_bound_pct": upper * 100.0,
+        "interval_width_pct": (upper - lower) * 100.0,
+        "forecast_sigma": sigma_value,
+        "forecast_sigma_pct": sigma_value * 100.0,
+        "model_uncertainty_pct": model_std * 100.0,
+        "confidence_label": confidence["confidence_label"],
+        "confidence_explanation": confidence["confidence_explanation"],
+        "signal_to_noise": confidence["signal_to_noise"],
+        "direction_probability": float(
+            direction_probability(np.asarray([expected_return]), np.asarray([sigma_value]))[0]
+        ),
+        # Decision context.
+        "decision_rule": decision_cfg.rule,
+        "signal_threshold": decision_cfg.threshold,
+        "signal_threshold_pct": decision_cfg.threshold * 100.0,
+        "signal_strength": abs(expected_return) / max(decision_cfg.threshold, 1e-9),
+        "ensemble_size": len(models),
     }
 
 
 def predict_ticker(ticker: str, config: dict, horizon: int | None = None) -> dict:
-    model, metadata, scaler, feature_columns, device = load_model_and_metadata(config, horizon=horizon)
-    return predict_ticker_with_artifacts(ticker, config, model, metadata, scaler, feature_columns, device, horizon)
+    models, metadata, scaler, feature_columns, device = load_model_and_metadata(config, horizon=horizon)
+    return predict_ticker_with_artifacts(
+        ticker, config, models, metadata, scaler, feature_columns, device, horizon
+    )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Predict future return for one or more stock tickers.")
     parser.add_argument("--ticker", type=str, default=None, help="Single ticker, for example AAPL")
-    parser.add_argument("--tickers", type=str, default=None, help="Comma-separated tickers, for example AAPL,MSFT,NVDA")
-    parser.add_argument(
-        "--horizon",
-        type=int,
-        default=None,
-        help="Prediction horizon in trading days, for example 1, 5, 21, 126, 252, 1260, or 2520",
-    )
+    parser.add_argument("--tickers", type=str, default=None, help="Comma-separated tickers")
+    parser.add_argument("--horizon", type=int, default=None, help="Prediction horizon in trading days")
     parser.add_argument("--output", type=str, default="reports/latest_predictions.csv", help="CSV output path")
     return parser.parse_args()
 
@@ -185,43 +337,48 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     config = load_config()
     args = parse_args()
-    selected_horizon = int(args.horizon or config.get("default_prediction_horizon", config.get("prediction_horizon", 10)))
+    selected_horizon = int(
+        args.horizon or config.get("default_prediction_horizon", config.get("prediction_horizon", 21))
+    )
 
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     elif args.ticker:
         tickers = [args.ticker.upper().strip()]
     else:
-        ticker = input("Enter stock ticker symbol, for example AAPL: ").upper().strip()
-        tickers = [ticker]
+        tickers = [input("Enter stock ticker symbol, for example AAPL: ").upper().strip()]
 
-    if not tickers:
+    if not tickers or not tickers[0]:
         raise ValueError("At least one ticker is required.")
 
-    model, metadata, scaler, feature_columns, device = load_model_and_metadata(config, horizon=selected_horizon)
+    models, metadata, scaler, feature_columns, device = load_model_and_metadata(
+        config, horizon=selected_horizon
+    )
     results = []
     for ticker in tickers:
         result = predict_ticker_with_artifacts(
-            ticker,
-            config,
-            model,
-            metadata,
-            scaler,
-            feature_columns,
-            device,
-            horizon=selected_horizon,
+            ticker, config, models, metadata, scaler, feature_columns, device, horizon=selected_horizon
         )
         results.append(result)
 
-        print("\nPrediction result")
-        print("-----------------")
-        print(f"Ticker: {result['ticker']}")
-        print(f"Latest data date: {result['latest_data_date']}")
-        print(f"Prediction horizon: {result['prediction_horizon_trading_days']} trading days")
-        print(f"Predicted future return: {result['expected_return_pct']:.2f}%")
-        print(f"Derived signal: {result['signal']}")
-        print(f"Trade threshold: {result['signal_threshold_pct']:.2f}%")
-        print(f"Signal strength: {result['signal_strength']:.2f}x threshold")
+        print(f"\n{result['ticker']} - {result['prediction_horizon_trading_days']} trading days ahead")
+        print("-" * 56)
+        print(f"Latest market date      : {result['latest_data_date']}")
+        print(f"Expected movement       : {result['expected_return_pct']:+.2f}%")
+        print(
+            f"Estimated range ({result['confidence_level']:.0%})  : "
+            f"{result['lower_bound_pct']:+.2f}% to {result['upper_bound_pct']:+.2f}%"
+        )
+        print(
+            f"Confidence              : {result['confidence_label']} "
+            f"(P[direction correct] = {result['direction_probability']:.1%})"
+        )
+        print(
+            f"  market baseline       : {result['market_drift_pct']:+.2f}%   "
+            f"model view vs market: {result['model_excess_return_pct']:+.2f}%"
+        )
+        print(f"Signal ({result['decision_rule']})  : {result['signal']}")
+        print(f"Cost hurdle             : {result['signal_threshold_pct']:.2f}%")
 
     output_path = ROOT / args.output
     output_path.parent.mkdir(parents=True, exist_ok=True)

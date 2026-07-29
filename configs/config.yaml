@@ -119,9 +119,7 @@ macro_tickers:
   usd_index: "DX-Y.NYB"
 
 
-# Start early enough for the longest labels.
-# A 10-year horizon needs at least 10 future years after each training row,
-# plus extra history for rolling indicators such as SMA-200.
+# Long history improves regime coverage and supplies indicator warm-up data.
 start_date: "2005-01-01"
 end_date: null   # null means download until today
 
@@ -133,31 +131,62 @@ random_seed: 42
 use_dataset_cache: true
 force_rebuild_dataset_cache: false
 
-# Supervised learning setup
-window_size: 60
+# Present-day earnings snapshots are not a point-in-time historical database.
+# Keep disabled unless a properly timestamped historical source is supplied.
+use_earnings_features: false
+
+# Supervised learning setup.
+# A shorter window than the original 60 sessions: the features already summarise
+# multi-horizon momentum, so extra sequence length mainly added capacity to
+# memorise date-specific noise (validation error rose from epoch 1 at 60).
+window_size: 30
+
+# Trailing window used to z-score regime-sensitive features per ticker.
+# Only past observations enter each z-score, so there is no look-ahead.
+regime_normalization_window: 252
+
+# Drop features that are identical for every ticker on a given date
+# (benchmark_* and macro_*). With a market-excess target these carry no
+# cross-sectional ranking information, but they let a sequence model identify
+# which date a window came from and memorise that date's noise. Stock-specific
+# market-relative features (excess_return_*, market_beta_60d,
+# idiosyncratic_volatility_20d) are kept, so market context is still used.
+exclude_market_wide_features: true
 
 # Prediction horizons are measured in trading days, not calendar days.
-# Approximation used here: 1 trading week = 5 sessions,
-# 1 trading month = 21 sessions, 1 trading year = 252 sessions.
+# Approximation: 1 trading week = 5 sessions, 1 trading month = 21 sessions.
 # The UI lets the user choose a horizon only after that horizon was trained.
 prediction_horizons:
-  - 1      # 1 day
-  - 5
-  - 21     # about 1 month
-  - 126    # about 6 months
-  - 252    # about 1 year
-  - 1260   # about 5 years
-  - 2520   # about 10 years
+  - 21     # one dedicated model per horizon, per model family
 default_prediction_horizon: 21
 
 # Backward-compatible value. Used only if prediction_horizons is missing.
 prediction_horizon: 21
 
-# Regression target only:
-# future_return = Close[t + horizon] / Close[t] - 1
-# These legacy thresholds are kept only for backward compatibility in dataset-building helpers.
+# Legacy thresholds, kept only for backward compatibility in dataset helpers.
 buy_threshold: 0.03
 sell_threshold: -0.03
+
+# --- Training target ---------------------------------------------------------
+# The reported prediction is always the total future percentage return:
+#   future_return = Close[t + h] / Close[t] - 1
+# But the model is trained on the decomposition
+#   future_return = benchmark_future_return + future_excess_return
+# and learns only the excess (market-relative) leg. The market leg carries most
+# of the variance of a pooled panel and is not forecastable from technicals, so
+# including it in the target only injects noise. At inference the market leg is
+# supplied by a drift estimated on the training window alone.
+#
+# mode:
+#   "market_excess"     - train on (stock return - benchmark return), vol-scaled
+#   "volatility_scaled" - train on the total return, vol-scaled
+#   "raw_return"        - train on the total return, unscaled
+regression_target:
+  mode: "market_excess"
+  volatility_column: "idiosyncratic_volatility_20d"
+  fallback_volatility_column: "volatility_20d"
+  daily_volatility_floor: 0.005
+  target_clip: 4.0
 
 # Hardware settings
 # auto = use Apple Metal GPU when available, otherwise fall back safely
@@ -165,32 +194,86 @@ device: "auto"
 num_workers: 0
 pin_memory: true
 
-# Model settings
-# The project now uses LSTM by default, as requested.
+# --- Model settings ----------------------------------------------------------
 model_type: "lstm"       # "lstm" or "gru"
 hidden_size: 64
 num_layers: 1
 dropout: 0.35
-batch_size: 128
-learning_rate: 0.0003
-epochs: 50
+# Drops whole input features per step. On ~70 correlated indicators this is a
+# much stronger regulariser than weight decay alone.
+input_dropout: 0.25
+batch_size: 256
+learning_rate: 0.0002
+epochs: 40
+weight_decay: 0.0005
+feature_scaler: "robust"          # less sensitive to return/volume outliers
+
+# Number of independently seeded members averaged into the final forecast.
+# Averaging de-correlated fits is the most reliable variance reduction available
+# on a low signal-to-noise target, and the member spread feeds the uncertainty
+# estimate. Set to 1 for a fast single-model run.
+ensemble_size: 3
 
 # Chronological split. Do not random-split time-series data.
 train_ratio: 0.70
 validation_ratio: 0.15   # test ratio is the remaining 0.15
+purge_overlapping_labels: true
 
-# Training improvements
-# Stop if validation loss does not improve for 7 straight epochs.
-early_stopping_patience: 7
+# Purged walk-forward validation, used by `--walk-forward`. Each fold refits
+# from scratch on data strictly before its own test window.
+walk_forward:
+  folds: 3
+  initial_train_ratio: 0.50
+  validation_ratio: 0.15
+  expanding: true
+
+# --- Training control --------------------------------------------------------
+# Checkpoint on the mean per-date cross-sectional information coefficient: the
+# quantity a stock-selection model can actually learn. Pooled MAE or correlation
+# reward a constant forecast, which is why earlier runs peaked at epoch 1.
+early_stopping_metric: "cross_sectional_ic"
+early_stopping_patience: 6
+early_stopping_min_delta: 0.0002
 max_grad_norm: 1.0
+regression_loss:
+  huber_beta: 0.5
+  correlation_weight: 0.15
+lr_scheduler_patience: 2
+lr_scheduler_factor: 0.5
+minimum_learning_rate: 0.000001
 
-# Backtesting settings
+# --- Uncertainty estimation --------------------------------------------------
+# LSTM  : Monte Carlo dropout across the seed ensemble.
+# XGBoost: moving-block bootstrap ensemble.
+# Both are then turned into intervals by normalised split-conformal calibration
+# fitted on validation data only.
+uncertainty:
+  confidence_level: 0.80          # nominal coverage of the reported range
+  mc_dropout_passes: 10           # stochastic passes per LSTM ensemble member
+  bootstrap_models: 15            # XGBoost bootstrap members
+  bootstrap_block_size: 21        # contiguous sessions per bootstrap block
+  minimum_sigma: 0.005            # floor so no forecast gets a zero-width band
+
+# --- Decision layer ----------------------------------------------------------
+# BUY / HOLD / SELL derived from the regression output and its uncertainty.
+#   risk_adjusted : act when (predicted_return - cost hurdle) / sigma clears
+#                   min_z_score, so a forecast on a volatile name must be larger
+#                   to earn the same signal. Parameters are tuned on validation.
+#   point         : classic fixed return threshold, no uncertainty input.
+decision:
+  rule: "risk_adjusted"
+  position_sizing: "binary"        # "binary" or "confidence"
+  min_direction_probability: 0.0
+
+# --- Backtesting -------------------------------------------------------------
 initial_cash: 10000
 transaction_cost_pct: 0.001    # 0.10% per trade
 slippage_pct: 0.0005           # 0.05% simulated slippage
 signal_threshold_multiplier: 1.0
 min_signal_edge: 0.0
 allow_short: false             # false = long / cash only, true = long / short / cash
+threshold_min_active_trades: 20
+evaluation_regime_blocks: 4
 
 # Output paths.
 # Horizon-specific files are created automatically, for example:
@@ -204,12 +287,19 @@ metrics_output_path: "reports/metrics.json"
 backtest_output_path: "reports/backtest_results.csv"
 plots_output_dir: "reports/plots"
 
-# XGBoost settings - second model for model comparison
+# XGBoost settings - second model family for a like-for-like comparison.
+# Early stopping minimises negative Spearman correlation rather than RMSE:
+# on a near-unpredictable target RMSE is optimised by shrinking every prediction
+# towards the mean, which is exactly the collapse to a constant we must avoid.
 xgboost:
   device: auto
-  n_estimators: 400
-  max_depth: 4
-  learning_rate: 0.03
+  n_estimators: 800
+  max_depth: 5
+  learning_rate: 0.02
   subsample: 0.8
-  colsample_bytree: 0.8
+  colsample_bytree: 0.6
+  min_child_weight: 20.0
+  reg_alpha: 0.10
+  reg_lambda: 3.0
+  early_stopping_rounds: 100
   random_state: 42

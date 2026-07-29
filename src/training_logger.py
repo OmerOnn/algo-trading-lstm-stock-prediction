@@ -29,23 +29,23 @@ class TeeStream:
             stream.flush()
 
 
-def build_training_log_path(logs_dir: Path, horizons: list[int]) -> Path:
+def build_training_log_path(logs_dir: Path, horizons: list[int], prefix: str = "lstm") -> Path:
     """
     Creates a clean log filename.
 
     Example:
-    logs/training_run_20260601_154233_h5_h10_h20_h30.log
+    logs/training_run_lstm_20260601_154233_h5_h10_h20_h30.log
     """
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     horizons_part = "_".join(f"h{h}" for h in horizons)
 
-    return logs_dir / f"training_run_{timestamp}_{horizons_part}.log"
+    return logs_dir / f"training_run_{prefix}_{timestamp}_{horizons_part}.log"
 
 
 @contextmanager
-def training_log_context(logs_dir: Path, horizons: list[int]):
+def training_log_context(logs_dir: Path, horizons: list[int], prefix: str = "lstm"):
     """
     Context manager that saves all terminal output into a log file.
 
@@ -56,7 +56,7 @@ def training_log_context(logs_dir: Path, horizons: list[int]):
 
     But it still shows everything in the terminal normally.
     """
-    log_path = build_training_log_path(logs_dir, horizons)
+    log_path = build_training_log_path(logs_dir, horizons, prefix=prefix)
 
     with open(log_path, "w", encoding="utf-8") as log_file:
         tee_stdout = TeeStream(sys.__stdout__, log_file)

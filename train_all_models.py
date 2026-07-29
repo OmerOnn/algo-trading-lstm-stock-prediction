@@ -5,7 +5,12 @@ import sys
 
 from src.data_download import preload_training_data
 from src.device import get_best_device
-from train import get_horizons, load_config, train_models_for_horizons as train_lstm_models_for_horizons
+from train import (
+    get_horizons,
+    load_config,
+    parse_horizon_list,
+    train_models_for_horizons as train_lstm_models_for_horizons,
+)
 from train_xgboost import resolve_xgboost_backend
 from train_xgboost import train_models_for_horizons as train_xgboost_models_for_horizons
 
@@ -29,7 +34,12 @@ def parse_args() -> argparse.Namespace:
         "--horizons",
         type=str,
         default=None,
-        help="Comma-separated horizons to train, for example 21,252.",
+        help="Comma-separated horizons to train, for example 21,63.",
+    )
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        help="Also run purged walk-forward validation for both model families.",
     )
     return parser.parse_args()
 
@@ -38,6 +48,7 @@ def train_all_models(
     selected_horizon: int | None = None,
     selected_horizons: list[int] | None = None,
     compare: bool = False,
+    walk_forward: bool = False,
 ) -> list[int]:
     config = load_config()
     horizons = get_horizons(config, selected_horizon, selected_horizons)
@@ -49,6 +60,7 @@ def train_all_models(
     print(f"Horizons: {horizons}")
     print("Models: LSTM, XGBoost")
     print(f"Compare reports: {'enabled' if compare else 'disabled'}")
+    print(f"Walk-forward validation: {'enabled' if walk_forward else 'disabled'}")
     print(
         f"LSTM backend: {device_info.accelerator} "
         f"({device_info.device}) - {device_info.device_name}"
@@ -69,10 +81,11 @@ def train_all_models(
         end=config["end_date"],
         macro_tickers=config.get("macro_tickers"),
         earnings_limit=int(config.get("earnings_history_limit", 100)),
+        preload_earnings=bool(config.get("use_earnings_features", False)),
     )
 
-    train_lstm_models_for_horizons(config, horizons)
-    train_xgboost_models_for_horizons(config, horizons)
+    train_lstm_models_for_horizons(config, horizons, walk_forward=walk_forward)
+    train_xgboost_models_for_horizons(config, horizons, walk_forward=walk_forward)
 
     if compare:
         from compare_results import main as compare_results_main
@@ -93,7 +106,12 @@ def train_all_models(
 def main() -> None:
     args = parse_args()
     selected_horizons = parse_horizon_list(args.horizons)
-    train_all_models(selected_horizon=args.horizon, selected_horizons=selected_horizons, compare=args.compare)
+    train_all_models(
+        selected_horizon=args.horizon,
+        selected_horizons=selected_horizons,
+        compare=args.compare,
+        walk_forward=bool(args.walk_forward),
+    )
 
 
 if __name__ == "__main__":

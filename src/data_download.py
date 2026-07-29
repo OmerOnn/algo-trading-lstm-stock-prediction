@@ -18,22 +18,36 @@ _EARNINGS_CACHE: dict[tuple[str, int], pd.DataFrame] = {}
 
 
 def _configure_download_environment() -> None:
-    """Set UTF-8 / CA bundle environment variables for Windows paths and SSL downloads."""
+    """
+    Set UTF-8 and CA bundle environment variables for SSL downloads.
+
+    On Windows the certifi bundle is copied to a pure-ASCII path first: requests
+    fails to load it when the interpreter lives under a path with non-ASCII
+    characters. On POSIX the bundle is used where certifi already put it --
+    hard-coding the Windows path there created a literal ``C:`` directory inside
+    the project.
+    """
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     os.environ.setdefault("LANG", "C.UTF-8")
     os.environ.setdefault("LC_ALL", "C.UTF-8")
 
-    cert_path = certifi.where()
-    temp_cert_dir = Path("C:/temp/certifi")
-    temp_cert_dir.mkdir(parents=True, exist_ok=True)
-    ascii_cert_path = temp_cert_dir / "cacert.pem"
-    if not ascii_cert_path.exists():
-        shutil.copy2(cert_path, ascii_cert_path)
+    cert_path = Path(certifi.where())
 
-    os.environ["SSL_CERT_FILE"] = str(ascii_cert_path)
-    os.environ["REQUESTS_CA_BUNDLE"] = str(ascii_cert_path)
-    os.environ["CURL_CA_BUNDLE"] = str(ascii_cert_path)
+    if os.name == "nt":
+        ascii_cert_dir = Path(os.environ.get("TEMP", "C:/temp")) / "certifi"
+        try:
+            ascii_cert_dir.mkdir(parents=True, exist_ok=True)
+            ascii_cert_path = ascii_cert_dir / "cacert.pem"
+            if not ascii_cert_path.exists():
+                shutil.copy2(cert_path, ascii_cert_path)
+            cert_path = ascii_cert_path
+        except OSError as exc:
+            print(f"Warning: could not stage an ASCII CA bundle, using certifi directly: {exc}")
+
+    os.environ["SSL_CERT_FILE"] = str(cert_path)
+    os.environ["REQUESTS_CA_BUNDLE"] = str(cert_path)
+    os.environ["CURL_CA_BUNDLE"] = str(cert_path)
 
 
 _configure_download_environment()
@@ -174,6 +188,7 @@ def preload_training_data(
     end: Optional[str] = None,
     macro_tickers: dict[str, str] | list[tuple[str, str]] | None = None,
     earnings_limit: int = 100,
+    preload_earnings: bool = True,
 ) -> None:
     """Preload shared raw datasets once so repeated model/horizon training reuses them in memory."""
     print("Preloading shared market data into memory cache...")
@@ -188,9 +203,10 @@ def preload_training_data(
             download_macro_data(macro_tickers, start, end)
         except Exception as exc:
             print(f"Warning: preload skipped macro data: {exc}")
-    for ticker in tickers:
-        try:
-            download_earnings_data(ticker, limit=earnings_limit)
-        except Exception as exc:
-            print(f"Warning: preload skipped earnings data for {ticker}: {exc}")
+    if preload_earnings:
+        for ticker in tickers:
+            try:
+                download_earnings_data(ticker, limit=earnings_limit)
+            except Exception as exc:
+                print(f"Warning: preload skipped earnings data for {ticker}: {exc}")
     print("Shared market data cache is ready.")
