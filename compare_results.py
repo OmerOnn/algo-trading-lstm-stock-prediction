@@ -39,8 +39,11 @@ METRIC_SPECS = [
     ("direction_accuracy", ("test_metrics", "direction_accuracy"), True),
     ("return_correlation", ("test_metrics", "return_correlation"), True),
     ("mae", ("test_metrics", "mae"), False),
+    ("mse", ("test_metrics", "mse"), False),
     ("rmse", ("test_metrics", "rmse"), False),
     ("r2", ("test_metrics", "r2"), True),
+    ("mse_skill_vs_historical_mean", ("test_metrics", "mse_skill_vs_historical_mean"), True),
+    ("mae_skill_vs_historical_mean", ("test_metrics", "mae_skill_vs_historical_mean"), True),
     ("rmse_skill_vs_zero", ("test_metrics", "rmse_skill_vs_zero"), True),
     ("interval_coverage_picp", ("uncertainty", "test_interval_metrics", "coverage_picp"), True),
     ("interval_coverage_error", ("uncertainty", "test_interval_metrics", "coverage_error"), True),
@@ -54,6 +57,34 @@ METRIC_SPECS = [
     ("max_drawdown", ("backtest_metrics", "max_drawdown"), True),
     ("win_rate", ("backtest_metrics", "win_rate"), True),
     ("number_of_active_trades", ("backtest_metrics", "number_of_active_trades"), True),
+    (
+        "portfolio_sharpe_mean_over_offsets",
+        ("portfolio_backtest", "top_k_long_only", "distribution", "sharpe_ratio", "mean"),
+        True,
+    ),
+    (
+        "portfolio_sharpe_worst_offset",
+        ("portfolio_backtest", "top_k_long_only", "distribution", "sharpe_ratio", "worst"),
+        True,
+    ),
+    (
+        "portfolio_information_ratio_mean",
+        ("portfolio_backtest", "top_k_long_only", "distribution",
+         "information_ratio_vs_universe", "mean"),
+        True,
+    ),
+    (
+        "portfolio_excess_vs_universe_mean",
+        ("portfolio_backtest", "top_k_long_only", "distribution",
+         "excess_return_vs_universe", "mean"),
+        True,
+    ),
+    (
+        "portfolio_annualised_turnover",
+        ("portfolio_backtest", "top_k_long_only", "distribution", "annualized_turnover", "mean"),
+        False,
+    ),
+    ("acceptance_gates_passed", ("acceptance_gates", "passed"), True),
     ("feature_count", ("feature_count",), True),
 ]
 
@@ -132,7 +163,12 @@ def build_baseline_rows(lstm_metrics: dict, xgb_metrics: dict) -> pd.DataFrame:
     add("LSTM ensemble", nested_lookup(lstm_metrics, ("component_metrics", "test")))
     add("XGBoost bootstrap", nested_lookup(xgb_metrics, ("component_metrics", "test")))
 
-    for name, values in (lstm_metrics.get("regression_baselines_excess") or {}).items():
+    baseline_block = (
+        lstm_metrics.get("regression_baselines_component")
+        or lstm_metrics.get("regression_baselines_excess")
+        or {}
+    )
+    for name, values in baseline_block.items():
         add(f"baseline: {name.replace('_', ' ')}", values)
 
     return pd.DataFrame(rows)
@@ -189,7 +225,19 @@ def write_markdown_report(
         f"# Model Comparison - Horizon {horizon} trading days",
         "",
         "Both models use the same panel, the same purged chronological split, the same "
-        "market-excess target and the same validation-frozen decision rule.",
+        "market-excess target, the same calibration and uncertainty treatment, and the "
+        "same validation-frozen decision rule. Every difference below is therefore a "
+        "property of the model rather than of the experimental setup.",
+        "",
+        "> **Which backtest rows to trust.** The `backtest_*`, "
+        "`buy_and_hold_total_return`, `excess_return_vs_buy_hold` and "
+        "`information_ratio_vs_universe` rows come from the *signal* backtest, which "
+        "holds cash whenever no name clears the hurdle. It is only partly invested, so "
+        "comparing its total return to 100%-invested buy-and-hold is not a like-for-like "
+        "comparison and its large negative excess is an artefact of exposure, not of "
+        "selection skill. The `portfolio_*` rows are the fair test: a fully invested "
+        "top-k book measured against the equal-weight universe, averaged over every "
+        "rebalance offset.",
         "",
         "## Head-to-head metrics",
         "",
@@ -230,7 +278,7 @@ def main() -> None:
     xgb_path = ROOT / "reports" / f"metrics_xgboost_h{horizon}.json"
 
     if not lstm_path.exists():
-        raise FileNotFoundError(f"Missing LSTM metrics: {lstm_path}. Run: python3 train.py --horizon {horizon}")
+        raise FileNotFoundError(f"Missing LSTM metrics: {lstm_path}. Run: python3 train_lstm.py --horizon {horizon}")
     if not xgb_path.exists():
         raise FileNotFoundError(
             f"Missing XGBoost metrics: {xgb_path}. Run: python3 train_xgboost.py --horizon {horizon}"

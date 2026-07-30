@@ -33,17 +33,40 @@ from sklearn.metrics import r2_score
 
 TOTAL_RETURN_COLUMN = "future_return"
 EXCESS_RETURN_COLUMN = "future_excess_return"
+RESIDUAL_RETURN_COLUMN = "future_residual_return"
 BENCHMARK_RETURN_COLUMN = "benchmark_future_return"
+BETA_COLUMN = "market_beta_60d"
 
-TARGET_MODES = {"raw_return", "volatility_scaled", "market_excess"}
+TARGET_MODES = {"raw_return", "volatility_scaled", "market_excess", "beta_neutral_residual"}
 
 DEFAULT_TARGET_CONFIG = {
-    # "market_excess" trains on benchmark-relative return scaled by volatility.
-    "mode": "market_excess",
+    # "beta_neutral_residual" trains on the return left after the stock's own
+    # beta-weighted share of the market move is removed, scaled by volatility.
+    #
+    # Why beta-neutral rather than plain market-excess: subtracting the raw
+    # benchmark return assumes every stock has beta 1. It does not. For a
+    # high-beta semiconductor name that leaves a large amount of market
+    # exposure inside the "excess" target, and for a low-beta utility it
+    # over-subtracts and inserts market exposure with the opposite sign. Either
+    # way the target still contains the unforecastable market factor, which is
+    # the exact problem the decomposition exists to remove.
+    "mode": "beta_neutral_residual",
     "volatility_column": "idiosyncratic_volatility_20d",
     "fallback_volatility_column": "volatility_20d",
     "daily_volatility_floor": 0.005,
     "target_clip": 4.0,
+    "beta_column": BETA_COLUMN,
+    # Beta clipping matters because beta multiplies the market leg: one bad
+    # rolling estimate would otherwise corrupt that stock's whole target.
+    "beta_clip": [0.0, 3.0],
+}
+
+# The return column each target mode actually learns.
+TARGET_COMPONENT_COLUMNS = {
+    "raw_return": TOTAL_RETURN_COLUMN,
+    "volatility_scaled": TOTAL_RETURN_COLUMN,
+    "market_excess": EXCESS_RETURN_COLUMN,
+    "beta_neutral_residual": RESIDUAL_RETURN_COLUMN,
 }
 
 
@@ -61,7 +84,19 @@ def resolve_target_config(config: dict | None) -> dict:
 def target_component_column(target_config: dict | None) -> str:
     """Name of the return column the model actually learns."""
     cfg = resolve_target_config(target_config)
-    return EXCESS_RETURN_COLUMN if cfg["mode"] == "market_excess" else TOTAL_RETURN_COLUMN
+    return TARGET_COMPONENT_COLUMNS[cfg["mode"]]
+
+
+def clipped_beta(df: pd.DataFrame, target_config: dict | None) -> np.ndarray:
+    """Each row's rolling beta, as known at prediction time, cleaned for use."""
+    cfg = resolve_target_config(target_config)
+    column = str(cfg.get("beta_column", BETA_COLUMN))
+    if column not in df.columns:
+        return np.ones(len(df), dtype=float)
+    low, high = [float(bound) for bound in cfg.get("beta_clip", [0.0, 3.0])]
+    values = df[column].astype(float).to_numpy()
+    values = np.where(np.isfinite(values), values, 1.0)
+    return np.clip(values, low, high)
 
 
 def target_scale(
@@ -105,13 +140,20 @@ def add_model_target(
     cfg = resolve_target_config(target_config)
 
     if BENCHMARK_RETURN_COLUMN in out.columns:
-        out[EXCESS_RETURN_COLUMN] = (
-            out[TOTAL_RETURN_COLUMN].astype(float) - out[BENCHMARK_RETURN_COLUMN].astype(float)
+        benchmark_future = out[BENCHMARK_RETURN_COLUMN].astype(float)
+        out[EXCESS_RETURN_COLUMN] = out[TOTAL_RETURN_COLUMN].astype(float) - benchmark_future
+        # Beta-weighted market removal. The beta used is the one observable at
+        # the prediction date, never a beta estimated over the forward window,
+        # so the label is constructible in real time.
+        out["target_beta"] = clipped_beta(out, cfg)
+        out[RESIDUAL_RETURN_COLUMN] = (
+            out[TOTAL_RETURN_COLUMN].astype(float) - out["target_beta"] * benchmark_future
         )
-    elif cfg["mode"] == "market_excess":
+    elif cfg["mode"] in {"market_excess", "beta_neutral_residual"}:
         raise KeyError(
-            f"regression_target.mode='market_excess' requires the '{BENCHMARK_RETURN_COLUMN}' "
-            "column. Rebuild the dataset cache so benchmark forward returns are included."
+            f"regression_target.mode='{cfg['mode']}' requires the "
+            f"'{BENCHMARK_RETURN_COLUMN}' column. Rebuild the dataset cache so "
+            "benchmark forward returns are included."
         )
 
     component_column = target_component_column(cfg)
@@ -137,7 +179,8 @@ def estimate_market_drift(train_df: pd.DataFrame, target_config: dict | None) ->
     all stored with the model artifacts.
     """
     cfg = resolve_target_config(target_config)
-    if cfg["mode"] != "market_excess" or BENCHMARK_RETURN_COLUMN not in train_df.columns:
+    decomposed = cfg["mode"] in {"market_excess", "beta_neutral_residual"}
+    if not decomposed or BENCHMARK_RETURN_COLUMN not in train_df.columns:
         return {"mode": cfg["mode"], "market_drift": 0.0, "market_drift_std": 0.0, "sample_size": 0}
 
     # One observation per date: the benchmark return is identical across tickers.
@@ -184,17 +227,38 @@ def _safe_rank_correlation(x: np.ndarray, y: np.ndarray) -> float:
     return value if np.isfinite(value) else 0.0
 
 
-def regression_metrics(true_return: np.ndarray, predicted_return: np.ndarray) -> dict:
-    """Point-forecast quality metrics for a return regression."""
+def regression_metrics(
+    true_return: np.ndarray,
+    predicted_return: np.ndarray,
+    reference_prediction: np.ndarray | float | None = None,
+) -> dict:
+    """
+    Point-forecast quality metrics for a return regression.
+
+    ``mse`` is reported explicitly alongside ``rmse``: this is a squared-error
+    regression problem, and the quantity actually being optimised should appear
+    in the report rather than only its square root.
+
+    ``reference_prediction`` is the forecast a *skill score* is measured against
+    — normally the historical mean return of the training window. Skill is
+    ``1 - error/reference_error``, so it is positive only when the model beats
+    that reference on identical rows. It is deliberately not measured against the
+    mean of the evaluation set, which no honest forecaster would know in advance
+    (that quantity is already reported as ``r2``).
+    """
     true_values = np.asarray(true_return, dtype=float)
     predicted_values = np.asarray(predicted_return, dtype=float)
     errors = predicted_values - true_values
+    squared_errors = np.square(errors)
+
     mae = float(np.mean(np.abs(errors)))
-    rmse = float(np.sqrt(np.mean(np.square(errors))))
+    mse = float(np.mean(squared_errors))
+    rmse = float(np.sqrt(mse))
     median_ae = float(np.median(np.abs(errors)))
     direction_accuracy = float(np.mean(np.sign(predicted_values) == np.sign(true_values)))
     zero_mae = float(np.mean(np.abs(true_values)))
-    zero_rmse = float(np.sqrt(np.mean(np.square(true_values))))
+    zero_mse = float(np.mean(np.square(true_values)))
+    zero_rmse = float(np.sqrt(zero_mse))
     normalised_mae = mae / zero_mae if zero_mae > 0 else 1.0
     normalised_rmse = rmse / zero_rmse if zero_rmse > 0 else 1.0
     pearson = _safe_correlation(true_values, predicted_values)
@@ -207,9 +271,10 @@ def regression_metrics(true_return: np.ndarray, predicted_return: np.ndarray) ->
         0.35 * rank_ic + 0.25 * pearson + 0.20 * direction_skill + 0.20 * rmse_skill
     )
 
-    return {
+    metrics = {
         "mae": mae,
         "median_absolute_error": median_ae,
+        "mse": mse,
         "rmse": rmse,
         "r2": r2,
         "direction_accuracy": direction_accuracy,
@@ -219,9 +284,36 @@ def regression_metrics(true_return: np.ndarray, predicted_return: np.ndarray) ->
         "prediction_mean": float(np.mean(predicted_values)),
         "normalized_mae_vs_zero": float(normalised_mae),
         "normalized_rmse_vs_zero": float(normalised_rmse),
+        "mse_skill_vs_zero": float(np.clip(1.0 - (mse / zero_mse if zero_mse > 0 else 1.0), -1.0, 1.0)),
         "rmse_skill_vs_zero": rmse_skill,
         "predictive_score": float(predictive_score),
+        "sample_size": int(len(true_values)),
     }
+
+    if reference_prediction is not None:
+        reference = np.broadcast_to(
+            np.asarray(reference_prediction, dtype=float), true_values.shape
+        )
+        reference_errors = reference - true_values
+        reference_mse = float(np.mean(np.square(reference_errors)))
+        reference_mae = float(np.mean(np.abs(reference_errors)))
+        metrics.update(
+            {
+                "reference_mse": reference_mse,
+                "reference_mae": reference_mae,
+                "reference_rmse": float(np.sqrt(reference_mse)),
+                "mse_skill_vs_historical_mean": float(
+                    1.0 - mse / reference_mse if reference_mse > 0 else 0.0
+                ),
+                "rmse_skill_vs_historical_mean": float(
+                    1.0 - rmse / np.sqrt(reference_mse) if reference_mse > 0 else 0.0
+                ),
+                "mae_skill_vs_historical_mean": float(
+                    1.0 - mae / reference_mae if reference_mae > 0 else 0.0
+                ),
+            }
+        )
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -334,15 +426,55 @@ def full_metrics(
     true_return: np.ndarray,
     predicted_return: np.ndarray,
     horizon: int = 1,
+    reference_prediction: np.ndarray | float | None = None,
 ) -> dict:
     """Point-forecast metrics plus the cross-sectional block, in one dictionary."""
-    metrics = regression_metrics(true_return, predicted_return)
+    metrics = regression_metrics(true_return, predicted_return, reference_prediction)
     cross_sectional = cross_sectional_metrics(dates, true_return, predicted_return, horizon=horizon)
     metrics.update({f"cross_sectional_{key}": value for key, value in cross_sectional.items()})
     # Convenience aliases usable directly as an early-stopping metric name.
     metrics["cross_sectional_ic"] = cross_sectional["mean_ic"]
     metrics["cross_sectional_icir"] = cross_sectional["icir"]
     return metrics
+
+
+SELECTION_SCORE_KEY = "validation_selection_score"
+
+
+def add_selection_score(metrics: dict, magnitude_weight: float = 0.25) -> dict:
+    """
+    Add the checkpoint-selection criterion, which requires *both* kinds of skill.
+
+    ```text
+    score = cross_sectional_ic + magnitude_weight * mse_skill_vs_historical_mean
+    ```
+
+    Neither term alone is a safe selection criterion:
+
+    * Selecting on MSE alone rewards a constant forecast. On a target this close
+      to unforecastable, predicting the mean is a strong squared-error solution
+      and carries no stock-selection information whatsoever — earlier runs of
+      this project peaked at epoch 1 for exactly that reason.
+    * Selecting on IC alone rewards a model that orders stocks correctly while
+      emitting wildly mis-scaled magnitudes. That is fatal here, because the
+      product reports an expected *percentage return*, not a rank.
+
+    Requiring both means a checkpoint has to order the cross-section correctly
+    and keep its magnitudes at least as good as the historical mean. The
+    magnitude term is skill against the training-window mean rather than R²,
+    because R² measures against the evaluation set's own mean, which a forecaster
+    could not have known.
+    """
+    scored = dict(metrics)
+    ic = float(scored.get("cross_sectional_ic", 0.0))
+    magnitude = float(scored.get("mse_skill_vs_historical_mean", 0.0))
+    if not np.isfinite(magnitude):
+        magnitude = 0.0
+    scored[SELECTION_SCORE_KEY] = float(
+        ic + float(magnitude_weight) * float(np.clip(magnitude, -1.0, 1.0))
+    )
+    scored["selection_score_magnitude_weight"] = float(magnitude_weight)
+    return scored
 
 
 def fit_return_calibration(true_return: np.ndarray, predicted_return: np.ndarray) -> dict:
@@ -395,19 +527,98 @@ def fit_return_calibration(true_return: np.ndarray, predicted_return: np.ndarray
     return {**identity, "reason": "calibration did not improve validation MAE"}
 
 
+def _rolling_historical_mean(
+    train_df: pd.DataFrame,
+    evaluation_df: pd.DataFrame,
+    horizon: int,
+    target_column: str,
+    window: int = 252,
+) -> np.ndarray:
+    """
+    Trailing mean of realised returns, using only outcomes already observable.
+
+    The subtlety that makes this a *legitimate* baseline: on date ``t`` the most
+    recent forward return that has finished realising started on ``t - horizon``.
+    Averaging labels dated up to ``t`` would use returns that had not happened
+    yet, so the series of per-date means is shifted by the horizon before the
+    trailing average is taken.
+    """
+    combined = pd.concat(
+        [train_df[[target_column]], evaluation_df[[target_column]]]
+    ).sort_index()
+    per_date = combined.groupby(level=0)[target_column].mean().astype(float)
+    observable = per_date.shift(int(max(1, horizon)))
+    trailing = observable.rolling(int(window), min_periods=20).mean()
+
+    fallback = float(train_df[target_column].mean())
+    mapped = pd.DatetimeIndex(evaluation_df.index).map(trailing)
+    return np.asarray(pd.Series(mapped).fillna(fallback), dtype=float)
+
+
+def _ridge_baseline(
+    train_df: pd.DataFrame,
+    evaluation_df: pd.DataFrame,
+    target_column: str,
+    feature_columns: list[str],
+    alpha: float = 100.0,
+) -> np.ndarray | None:
+    """
+    A linear model on the same features, as the reference any ML model must beat.
+
+    If a heavily regularised ridge on identical inputs matches the network and the
+    boosted trees, the non-linear machinery is not earning its complexity. Ridge
+    rather than plain OLS because the feature set is wide and strongly collinear.
+    """
+    usable = [column for column in feature_columns if column in train_df.columns]
+    if not usable or train_df.empty:
+        return None
+    from sklearn.linear_model import Ridge
+
+    x_train = train_df[usable].astype(float).to_numpy()
+    mean = x_train.mean(axis=0)
+    std = x_train.std(axis=0)
+    std = np.where(std > 0, std, 1.0)
+
+    model = Ridge(alpha=float(alpha))
+    model.fit((x_train - mean) / std, train_df[target_column].astype(float).to_numpy())
+    x_eval = evaluation_df[usable].astype(float).to_numpy()
+    return np.asarray(model.predict((x_eval - mean) / std), dtype=float)
+
+
 def baseline_predictions(
     train_df: pd.DataFrame,
     evaluation_df: pd.DataFrame,
     horizon: int,
     target_column: str = TOTAL_RETURN_COLUMN,
+    feature_columns: list[str] | None = None,
 ) -> dict[str, np.ndarray]:
-    """Transparent reference forecasts evaluated on exactly the same rows."""
+    """
+    Transparent reference forecasts, evaluated on exactly the same rows.
+
+    Every baseline is fitted on the training window only. They exist to answer
+    "did the model learn anything a trivial rule does not already know?", and a
+    baseline fitted on the evaluation rows could not answer that.
+    """
     row_count = len(evaluation_df)
     train_mean = float(train_df[target_column].mean())
+
     ticker_means = train_df.groupby("Ticker")[target_column].mean()
-    ticker_mean_prediction = (
-        evaluation_df["Ticker"].map(ticker_means).fillna(train_mean).astype(float).to_numpy()
-    )
+    baselines = {
+        "zero_return": np.zeros(row_count, dtype=float),
+        "historical_mean": np.full(row_count, train_mean, dtype=float),
+        "rolling_historical_mean": _rolling_historical_mean(
+            train_df, evaluation_df, horizon, target_column
+        ),
+        "ticker_historical_mean": (
+            evaluation_df["Ticker"].map(ticker_means).fillna(train_mean).astype(float).to_numpy()
+        ),
+    }
+
+    if "sector" in train_df.columns and "sector" in evaluation_df.columns:
+        sector_means = train_df.groupby("sector")[target_column].mean()
+        baselines["sector_historical_mean"] = (
+            evaluation_df["sector"].map(sector_means).fillna(train_mean).astype(float).to_numpy()
+        )
 
     for candidate in (f"return_{horizon}d", "return_60d", "return_20d", "return_5d"):
         if candidate in evaluation_df.columns:
@@ -415,22 +626,36 @@ def baseline_predictions(
             break
     else:
         momentum = np.zeros(row_count, dtype=float)
+    baselines["momentum"] = momentum
+    baselines["reversal"] = -momentum
 
-    baselines = {
-        "zero_return": np.zeros(row_count, dtype=float),
-        "historical_mean": np.full(row_count, train_mean, dtype=float),
-        "ticker_historical_mean": ticker_mean_prediction,
-        "momentum": momentum,
-        "reversal": -momentum,
-    }
-
-    if target_column == EXCESS_RETURN_COLUMN and "excess_return_20d" in evaluation_df.columns:
-        baselines["excess_momentum"] = (
-            evaluation_df["excess_return_20d"].astype(float).to_numpy()
+    if "excess_return_20d" in evaluation_df.columns:
+        baselines["excess_momentum"] = evaluation_df["excess_return_20d"].astype(float).to_numpy()
+    if "residual_momentum_20d" in evaluation_df.columns:
+        baselines["residual_momentum"] = (
+            evaluation_df["residual_momentum_20d"].astype(float).to_numpy()
         )
-    if target_column == TOTAL_RETURN_COLUMN and BENCHMARK_RETURN_COLUMN in train_df.columns:
+    if "sector_relative_return_20d" in evaluation_df.columns:
+        baselines["sector_relative_momentum"] = (
+            evaluation_df["sector_relative_return_20d"].astype(float).to_numpy()
+        )
+
+    if BENCHMARK_RETURN_COLUMN in train_df.columns:
         drift = estimate_market_drift(train_df, {"mode": "market_excess"})["market_drift"]
         baselines["market_drift"] = np.full(row_count, drift, dtype=float)
+        if target_column == TOTAL_RETURN_COLUMN:
+            # "Market only": the stock's beta times the market drift and nothing
+            # else. This is the forecast of someone who knows index history and
+            # each stock's market exposure but has no stock-specific view at all,
+            # so beating it is the minimum bar for claiming any alpha.
+            baselines["market_only_forecast"] = (
+                clipped_beta(evaluation_df, None) * float(drift)
+            )
+
+    if feature_columns:
+        ridge = _ridge_baseline(train_df, evaluation_df, target_column, feature_columns)
+        if ridge is not None:
+            baselines["ridge_regression"] = ridge
 
     return baselines
 
@@ -440,13 +665,18 @@ def evaluate_baselines(
     evaluation_df: pd.DataFrame,
     horizon: int,
     target_column: str = TOTAL_RETURN_COLUMN,
+    feature_columns: list[str] | None = None,
 ) -> dict[str, dict]:
+    """Score every baseline on identical rows, with identical metrics."""
     true_values = evaluation_df[target_column].astype(float).to_numpy()
     dates = evaluation_df.index
+    reference = float(train_df[target_column].mean())
     return {
-        name: full_metrics(dates, true_values, values, horizon=horizon)
+        name: full_metrics(
+            dates, true_values, values, horizon=horizon, reference_prediction=reference
+        )
         for name, values in baseline_predictions(
-            train_df, evaluation_df, horizon, target_column
+            train_df, evaluation_df, horizon, target_column, feature_columns
         ).items()
     }
 

@@ -31,6 +31,8 @@ from src.features import (
     add_technical_indicators,
 )
 from src.model import StockReturnPredictor
+from src.panel_features import add_panel_features
+from src.calibration import ReturnCalibration
 from src.regression import apply_return_calibration, resolve_target_config, target_scale
 from src.uncertainty import IntervalCalibration, describe_confidence, mc_dropout_predict
 
@@ -77,6 +79,34 @@ def artifact_path(base_path: str | Path, horizon: int) -> Path:
     return ROOT / path.with_name(f"{path.stem}_h{horizon}{path.suffix}")
 
 
+def lstm_model_exists(config: dict, horizon: int) -> bool:
+    """
+    True only for artifacts this code can actually load.
+
+    The schema check matters: checkpoints from before the architecture change
+    exist on disk for several horizons but would fail to load into the current
+    model, so treating "file present" as "model available" would surface a
+    crash to the user instead of a clean "not trained yet" message.
+    """
+    try:
+        _, _, metadata_path = resolve_artifact_paths(config, int(horizon))
+    except FileNotFoundError:
+        return False
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as file:
+            return int(json.load(file).get("artifact_schema_version", 1)) >= 3
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def available_models_for_horizon(config: dict, horizon: int) -> dict[str, bool]:
+    """Which trained model families exist for a horizon, without raising."""
+    return {
+        "LSTM": lstm_model_exists(config, int(horizon)),
+        "XGBoost": xgboost_model_exists(int(horizon)),
+    }
+
+
 def resolve_artifact_paths(config: dict, horizon: int) -> tuple[Path, Path, Path]:
     model_path = artifact_path(config["model_output_path"], horizon)
     scaler_path = artifact_path(config["scaler_output_path"], horizon)
@@ -97,11 +127,12 @@ def resolve_artifact_paths(config: dict, horizon: int) -> tuple[Path, Path, Path
 
     raise FileNotFoundError(
         f"No trained model artifacts were found for horizon={horizon}. "
-        f"Run: python3 train.py --horizon {horizon}"
+        f"Run: python3 train_lstm.py --horizon {horizon}"
     )
 
 
-def build_latest_features(ticker: str, config: dict, feature_columns: list[str], horizon: int) -> pd.DataFrame:
+def _per_ticker_features(ticker: str, config: dict, feature_columns: list[str]) -> pd.DataFrame:
+    """Indicators, benchmark context, macro and trailing z-scores for one ticker."""
     price_df = download_price_data(ticker, config["start_date"], config["end_date"])
     benchmark_df = download_price_data(config["benchmark_ticker"], config["start_date"], config["end_date"])
     macro_df = pd.DataFrame()
@@ -123,7 +154,59 @@ def build_latest_features(ticker: str, config: dict, feature_columns: list[str],
     if bool(config.get("use_earnings_features", False)) or earnings_feature_names.intersection(feature_columns):
         df = add_earnings_features(df, download_earnings_data(ticker))
     df = add_regime_normalized_features(df, window=int(config.get("regime_normalization_window", 252)))
-    df = df.replace([np.inf, -np.inf], np.nan)
+    return df.replace([np.inf, -np.inf], np.nan)
+
+
+# The universe panel is expensive to build and identical for every ticker in a
+# request, so it is cached per (universe, date range) for the life of the process.
+_UNIVERSE_PANEL_CACHE: dict[tuple, pd.DataFrame] = {}
+
+
+def build_universe_panel(config: dict, feature_columns: list[str]) -> pd.DataFrame:
+    """
+    Build the whole universe's feature panel.
+
+    Inference cannot be done one ticker at a time any more. Cross-sectional
+    ranks, breadth, dispersion, average correlation and the sector composites are
+    all defined *relative to the other stocks on the same date*, so producing
+    them for one ticker in isolation is not possible — the cross-section is the
+    feature. The panel is therefore built for the configured universe and the
+    requested ticker's row is selected from it.
+    """
+    universe = tuple(config["tickers"])
+    key = (universe, str(config["start_date"]), str(config.get("end_date")))
+    if key in _UNIVERSE_PANEL_CACHE:
+        return _UNIVERSE_PANEL_CACHE[key]
+
+    frames = []
+    for ticker in universe:
+        try:
+            frames.append(_per_ticker_features(ticker, config, feature_columns))
+        except Exception as exc:  # noqa: BLE001 - one bad ticker must not break inference
+            print(f"Warning: could not build features for {ticker}: {exc}")
+    if not frames:
+        raise ValueError("No universe data could be built, so cross-sectional features are unavailable.")
+
+    panel = pd.concat(frames).sort_index()
+    panel = add_panel_features(
+        panel,
+        ticker_sectors=config.get("ticker_sectors"),
+        minimum_sector_members=int(config.get("minimum_sector_members", 3)),
+        regime_normalization_window=int(config.get("regime_normalization_window", 252)),
+    )
+    _UNIVERSE_PANEL_CACHE[key] = panel
+    return panel
+
+
+def build_latest_features(ticker: str, config: dict, feature_columns: list[str], horizon: int) -> pd.DataFrame:
+    """Feature rows for one ticker, taken from the full universe panel."""
+    panel = build_universe_panel(config, feature_columns)
+    df = panel[panel["Ticker"].astype(str).str.upper() == str(ticker).upper()].copy()
+    if df.empty:
+        raise ValueError(
+            f"{ticker} is not in the configured universe, so its cross-sectional "
+            "features cannot be built. Add it to `tickers` in configs/config.yaml."
+        )
 
     missing = [column for column in feature_columns if column not in df.columns]
     if missing:
@@ -132,6 +215,21 @@ def build_latest_features(ticker: str, config: dict, feature_columns: list[str],
             f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
         )
     return df.dropna(subset=feature_columns).copy()
+
+
+def latest_row_beta(df: pd.DataFrame) -> float | None:
+    """
+    The stock's rolling market beta on the most recent row.
+
+    The market leg of the decomposition is ``beta * expected_market_return``, so
+    serving has to apply the same beta the target was built with. Returns None
+    when the column is absent or non-finite, and the caller then falls back to a
+    beta of 1.
+    """
+    if "market_beta_60d" not in df.columns or df.empty:
+        return None
+    value = float(df["market_beta_60d"].iloc[-1])
+    return value if np.isfinite(value) else None
 
 
 def build_backtest_config(config: dict) -> BacktestConfig:
@@ -157,6 +255,116 @@ def build_decision_config(config: dict, metadata: dict) -> DecisionConfig:
         min_direction_probability=float(stored.get("min_direction_probability", 0.0)),
         position_sizing=str(stored.get("position_sizing", "binary")),
     )
+
+
+def assemble_prediction(
+    ticker: str,
+    latest_date: str,
+    horizon: int,
+    component_return: float,
+    component_model_std: float,
+    latest_scale: float,
+    metadata: dict,
+    config: dict,
+    model_name: str,
+    latest_beta: float | None = None,
+) -> dict:
+    """
+    Turn a raw model output into the full user-facing prediction record.
+
+    Shared by both model families so the LSTM and XGBoost outputs are directly
+    comparable: same calibration order, same interval construction, same signal
+    rule and the same confidence vocabulary.
+    """
+    calibration_payload = metadata.get("return_calibration") or {}
+    if "method" in calibration_payload:
+        # Schema 4: the full ReturnCalibration (affine / ridge / isotonic, with
+        # shrinkage and optional cross-sectional centring). No dates are passed:
+        # a single-ticker request has no cross-section, so the calibration falls
+        # back to its stored centring offset instead of centring a value against
+        # itself, which would return exactly zero.
+        component_return = float(
+            ReturnCalibration.from_dict(calibration_payload).apply(
+                np.asarray([component_return])
+            )[0]
+        )
+    else:
+        # Schema 3 and earlier stored a plain affine {slope, intercept, enabled}.
+        component_return = float(
+            apply_return_calibration(np.asarray([component_return]), calibration_payload)[0]
+        )
+
+    interval_calibration = IntervalCalibration.from_dict(metadata.get("interval_calibration"))
+    lower_component, upper_component, sigma = interval_calibration.interval(
+        np.asarray([component_return]),
+        np.asarray([component_model_std]),
+        np.asarray([latest_scale]),
+    )
+
+    # The market leg. Schema 4 stores the whole stage-1 model; when its
+    # fold-selected shrinkage is zero this is exactly the historical drift, which
+    # is what older artifacts stored directly.
+    market_payload = metadata.get("market_model") or metadata.get("market_drift") or {}
+    market_drift = float(market_payload.get("drift", market_payload.get("market_drift", 0.0)))
+
+    # Beta-weighted, matching the training-time decomposition. Falls back to 1.0
+    # for artifacts trained on a plain market-excess target.
+    beta = float(latest_beta if latest_beta is not None else 1.0)
+    if str(metadata.get("modelled_component", "")) != "future_residual_return":
+        beta = 1.0
+    market_component = beta * market_drift
+
+    expected_return = component_return + market_component
+    lower = float(lower_component[0]) + market_component
+    upper = float(upper_component[0]) + market_component
+    sigma_value = float(sigma[0])
+
+    decision_cfg = build_decision_config(config, metadata)
+    signal = decide(expected_return, sigma_value, decision_cfg)
+    confidence = describe_confidence(expected_return, sigma_value)
+
+    return {
+        "model": model_name,
+        "ticker": ticker,
+        "latest_data_date": latest_date,
+        "prediction_horizon_trading_days": int(horizon),
+        "signal": signal,
+        "expected_return": expected_return,
+        "expected_return_pct": expected_return * 100.0,
+        "predicted_return": expected_return,
+        "market_drift": market_drift,
+        "market_drift_pct": market_drift * 100.0,
+        # The hierarchical decomposition, reported component by component so the
+        # user can see whether a forecast is a market call or a stock call.
+        "market_component": market_component,
+        "market_component_pct": market_component * 100.0,
+        "sector_component": 0.0,
+        "sector_component_pct": 0.0,
+        "stock_specific_component": component_return,
+        "stock_specific_component_pct": component_return * 100.0,
+        "beta_applied": beta,
+        "model_excess_return": component_return,
+        "model_excess_return_pct": component_return * 100.0,
+        "confidence_level": float(interval_calibration.confidence_level),
+        "lower_bound": lower,
+        "lower_bound_pct": lower * 100.0,
+        "upper_bound": upper,
+        "upper_bound_pct": upper * 100.0,
+        "interval_width_pct": (upper - lower) * 100.0,
+        "forecast_sigma": sigma_value,
+        "forecast_sigma_pct": sigma_value * 100.0,
+        "model_uncertainty_pct": component_model_std * 100.0,
+        "confidence_label": confidence["confidence_label"],
+        "confidence_explanation": confidence["confidence_explanation"],
+        "signal_to_noise": confidence["signal_to_noise"],
+        "direction_probability": float(
+            direction_probability(np.asarray([expected_return]), np.asarray([sigma_value]))[0]
+        ),
+        "decision_rule": decision_cfg.rule,
+        "signal_threshold": decision_cfg.threshold,
+        "signal_threshold_pct": decision_cfg.threshold * 100.0,
+        "signal_strength": abs(expected_return) / max(decision_cfg.threshold, 1e-9),
+    }
 
 
 def load_model_and_metadata(config: dict, horizon: int | None = None):
@@ -190,6 +398,11 @@ def load_model_and_metadata(config: dict, horizon: int | None = None):
             dropout=float(metadata["dropout"]),
             model_type=str(metadata.get("model_type", config.get("model_type", "lstm"))),
             input_dropout=float(metadata.get("input_dropout", 0.10)),
+            # Both must come from the metadata, not the current config. Auxiliary
+            # heads add parameters to the state dict, so a model trained with them
+            # cannot be loaded into an architecture built without them.
+            recurrent_dropout=float(metadata.get("recurrent_dropout", 0.0)),
+            auxiliary_horizons=list(metadata.get("auxiliary_horizons", []) or []),
         ).to(device)
         model.load_state_dict(state_dict)
         model.eval()
@@ -257,65 +470,108 @@ def predict_ticker_with_artifacts(
     )
     latest_scale = float(target_scale(df.tail(1), selected_horizon, target_configuration)[0])
 
-    component_return = float(
-        apply_return_calibration(
-            np.asarray([scaled_mean * latest_scale]), metadata.get("return_calibration")
-        )[0]
+    latest_beta = latest_row_beta(df)
+    return assemble_prediction(
+        ticker=ticker,
+        latest_date=str(df.index[-1].date()),
+        horizon=selected_horizon,
+        component_return=scaled_mean * latest_scale,
+        component_model_std=scaled_model_std * latest_scale,
+        latest_scale=latest_scale,
+        metadata=metadata,
+        config=config,
+        model_name="LSTM",
+        latest_beta=latest_beta,
+    ) | {"ensemble_size": len(models)}
+
+
+# ---------------------------------------------------------------------------
+# XGBoost inference
+# ---------------------------------------------------------------------------
+
+
+def xgboost_artifact_paths(horizon: int) -> tuple[Path, Path]:
+    return (
+        ROOT / "models" / f"xgboost_regressor_h{horizon}.joblib",
+        ROOT / "models" / f"xgboost_metadata_h{horizon}.json",
     )
-    model_std = scaled_model_std * latest_scale
 
-    interval_calibration = IntervalCalibration.from_dict(metadata.get("interval_calibration"))
-    lower_component, upper_component, sigma = interval_calibration.interval(
-        np.asarray([component_return]), np.asarray([model_std]), np.asarray([latest_scale])
+
+def xgboost_model_exists(horizon: int) -> bool:
+    model_path, metadata_path = xgboost_artifact_paths(int(horizon))
+    if not (model_path.exists() and metadata_path.exists()):
+        return False
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as file:
+            return int(json.load(file).get("artifact_schema_version", 1)) >= 3
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def load_xgboost_model_and_metadata(config: dict, horizon: int | None = None):
+    """Load the bootstrap ensemble and its calibrations for one horizon."""
+    selected_horizon = int(
+        horizon or config.get("default_prediction_horizon", config.get("prediction_horizon", 21))
     )
+    model_path, metadata_path = xgboost_artifact_paths(selected_horizon)
+    if not (model_path.exists() and metadata_path.exists()):
+        raise FileNotFoundError(
+            f"No trained XGBoost artifacts were found for horizon={selected_horizon}. "
+            f"Run: python3 train_xgboost.py --horizon {selected_horizon}"
+        )
 
-    market_drift = float((metadata.get("market_drift") or {}).get("market_drift", 0.0))
-    expected_return = component_return + market_drift
-    lower = float(lower_component[0]) + market_drift
-    upper = float(upper_component[0]) + market_drift
-    sigma_value = float(sigma[0])
+    with open(metadata_path, "r", encoding="utf-8") as file:
+        metadata = json.load(file)
 
-    decision_cfg = build_decision_config(config, metadata)
-    signal = decide(expected_return, sigma_value, decision_cfg)
-    confidence = describe_confidence(expected_return, sigma_value)
+    ensemble = joblib.load(model_path)
+    metadata["artifact_model_path"] = str(model_path)
+    metadata["artifact_metadata_path"] = str(metadata_path)
+    return ensemble, metadata, metadata["feature_columns"]
 
-    return {
-        "ticker": ticker,
-        "latest_data_date": str(df.index[-1].date()),
-        "prediction_horizon_trading_days": selected_horizon,
-        "signal": signal,
-        # Point forecast, in return units and percent.
-        "expected_return": expected_return,
-        "expected_return_pct": expected_return * 100.0,
-        "predicted_return": expected_return,
-        # Decomposition: what the model contributes versus the market baseline.
-        "market_drift": market_drift,
-        "market_drift_pct": market_drift * 100.0,
-        "model_excess_return": component_return,
-        "model_excess_return_pct": component_return * 100.0,
-        # Uncertainty.
-        "confidence_level": float(interval_calibration.confidence_level),
-        "lower_bound": lower,
-        "lower_bound_pct": lower * 100.0,
-        "upper_bound": upper,
-        "upper_bound_pct": upper * 100.0,
-        "interval_width_pct": (upper - lower) * 100.0,
-        "forecast_sigma": sigma_value,
-        "forecast_sigma_pct": sigma_value * 100.0,
-        "model_uncertainty_pct": model_std * 100.0,
-        "confidence_label": confidence["confidence_label"],
-        "confidence_explanation": confidence["confidence_explanation"],
-        "signal_to_noise": confidence["signal_to_noise"],
-        "direction_probability": float(
-            direction_probability(np.asarray([expected_return]), np.asarray([sigma_value]))[0]
-        ),
-        # Decision context.
-        "decision_rule": decision_cfg.rule,
-        "signal_threshold": decision_cfg.threshold,
-        "signal_threshold_pct": decision_cfg.threshold * 100.0,
-        "signal_strength": abs(expected_return) / max(decision_cfg.threshold, 1e-9),
-        "ensemble_size": len(models),
-    }
+
+def predict_xgboost_ticker_with_artifacts(
+    ticker: str,
+    config: dict,
+    ensemble,
+    metadata: dict,
+    feature_columns: list[str],
+    horizon: int | None = None,
+) -> dict:
+    """
+    Prediction record for one ticker from the XGBoost bootstrap ensemble.
+
+    The trees consume raw (unscaled) features, so no feature scaler is applied
+    here -- unlike the LSTM path. Epistemic uncertainty is the spread across
+    bootstrap members.
+    """
+    selected_horizon = int(
+        horizon or metadata.get("prediction_horizon", config.get("prediction_horizon", 21))
+    )
+    df = build_latest_features(ticker, config, feature_columns, selected_horizon)
+    if df.empty:
+        raise ValueError("No usable rows remain after feature engineering.")
+
+    latest_row = df[feature_columns].tail(1)
+    mean_scaled, std_scaled = ensemble.predict(latest_row)
+
+    target_configuration = resolve_target_config(
+        metadata.get("target_configuration", {"mode": "raw_return"})
+    )
+    latest_scale = float(target_scale(df.tail(1), selected_horizon, target_configuration)[0])
+
+    latest_beta = latest_row_beta(df)
+    return assemble_prediction(
+        ticker=ticker,
+        latest_date=str(df.index[-1].date()),
+        horizon=selected_horizon,
+        component_return=float(np.asarray(mean_scaled)[0]) * latest_scale,
+        component_model_std=float(np.asarray(std_scaled)[0]) * latest_scale,
+        latest_scale=latest_scale,
+        metadata=metadata,
+        config=config,
+        model_name="XGBoost",
+        latest_beta=latest_beta,
+    ) | {"ensemble_size": len(ensemble)}
 
 
 def predict_ticker(ticker: str, config: dict, horizon: int | None = None) -> dict:

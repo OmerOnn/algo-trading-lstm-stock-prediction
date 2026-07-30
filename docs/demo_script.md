@@ -31,17 +31,28 @@ uncertainty, purely so the forecast can be tested against transaction costs.
 Show the decomposition:
 
 ```text
-future_return = benchmark_future_return + future_excess_return
-                └── market drift, from ──┘  └── what the model learns ──┘
-                    training data only
+expected_stock_return = beta * expected_market_return   <- stage-1 model
+                      + expected_stock_residual         <- what the model learns
 ```
 
 Explain: over a month, most of the variance of a multi-stock panel is the market
 move common to every name, and technical indicators on one stock say essentially
 nothing about next month's index return. Training on the total return therefore
-optimises mostly noise. The model learns the **market-excess** leg; the market
-leg comes from a train-only drift estimate. The user still sees one total number,
-and the UI shows both components.
+optimises mostly noise. The model learns only the **residual** leg. The user
+still sees one total number, and the UI shows both components.
+
+Two points worth making explicitly:
+
+* The subtraction is **beta-weighted**, not a plain benchmark subtraction. A
+  plain subtraction assumes every stock has beta 1, which leaves market exposure
+  inside the target for high-beta names and inserts it with the wrong sign for
+  low-beta ones.
+* The market leg has its own model — and it **earned a weight of zero**. Fitted
+  on one validation window it wanted 0.74; across purged folds the per-fold
+  optima were 0.000 / 0.228 / 0.000, so the consistency rule set it to 0 and the
+  leg reduces to the historical drift. That is a negative result, and showing it
+  is a better slide than hiding it: the framework detected non-generalising skill
+  and refused to use it.
 
 Then show the feature rule that follows from it: `benchmark_*` and `macro_*`
 columns are identical for every ticker on a date, so they cannot rank stocks —
@@ -81,10 +92,17 @@ The interval is then set by **normalised split-conformal calibration** on
 validation only, so the coverage is empirical rather than assuming Gaussian
 errors.
 
-Show the headline honesty check: **out-of-sample coverage 78.2% against a
-nominal 80%**. And note that the epistemic share of variance is under 1% — almost
-all the uncertainty is irreducible market noise, which is the correct and honest
-answer for equities.
+Show the headline honesty check: **out-of-sample coverage 78.5% against a
+nominal 80%**. The epistemic share of variance is **0.1%** — almost all the
+uncertainty is irreducible market noise, which is the correct and honest answer
+for equities.
+
+Then show the part most projects would leave out. **Conditional** coverage by
+volatility bucket misses by up to 0.136, and filtering by confidence *reduced*
+IC by 0.017. So the interval honestly communicates how wide the outcome
+distribution is, but it is **not** useful as a filter — and the validation-tuned
+decision rule agreed, selecting `min_z_score = 0`, which collapses the
+risk-adjusted rule to a plain threshold. Saying that out loud is the point.
 
 Pre-empt the obvious question: *"why is the band ±10%?"* Because a large-cap
 stock's 21-day return has a standard deviation near 9%. A narrow band would
@@ -102,23 +120,41 @@ beat which?", and only the second is learnable here. Directional accuracy above
 
 Show for XGBoost at horizon 21:
 
-* cross-sectional IC **+0.055**, t-statistic **+2.03**, positive on **65.8%** of
-  test dates;
-* top-minus-bottom quintile spread **+20.2% annualised**;
-* best baseline (excess momentum) IC **+0.020** — the model beats it on identical
-  rows;
-* purged walk-forward: **+0.037 ± 0.010**, positive in all three folds.
+* purged walk-forward IC **+0.0403 ± 0.0077**, positive in **all three folds**;
+* holdout IC **+0.0437**, positive on **62.2%** of dates, quintile spread
+  **+15.3% annualised**;
+* **MSE and MAE now beat the historical mean** (skill +0.0079 / +0.0081) — they
+  were at parity before;
+* best simple baseline (sector-relative momentum) IC **+0.0211**.
 
-Then the backtest: Sharpe 1.72 net of costs and slippage on non-overlapping
-horizon dates, max drawdown -2.4%. Be honest that it trails equal-weight
-buy-and-hold in total return because it is long-only and selectively invested.
+Then the backtest — and stress that this is the *fair* version. The old report
+compared a ~17%-invested strategy to 100% buy-and-hold, which is not a
+comparison. The fully invested top-20 portfolio, averaged over **all 21 rebalance
+offsets**: Sharpe **+1.56** (worst offset +1.34), information ratio vs the
+equal-weight universe **+0.77** (worst +0.43), annualised turnover 9×, costs
+charged on realised turnover.
+
+The single best evidence slide: **sector-neutralising improves it** (Sharpe
++1.89, IR +1.08). Removing the sector tilt makes the strategy better, which is
+what you would expect if the edge is genuine stock selection rather than a
+standing sector bet.
+
+Be equally direct about the weak points: the IC t-statistic is **1.52**, below
+the pre-registered bar of 2.0 — so one of the nine acceptance gates **fails**,
+and it is reported as failing. And a plain ridge regression on the same features
+reaches IC +0.0361 against the model's +0.0437, so most of the signal is linear.
 
 ---
 
 ## 7. Live demo (3 min)
 
 ```bash
-python3 train_all_models.py --horizon 21 --compare --walk-forward   # pre-run
+# pre-run before the demo
+python3 train_lstm.py    --horizon 21 --walk-forward
+python3 train_xgboost.py --horizon 21 --walk-forward --grid-search --permutation-importance
+python3 blend_models.py  --horizon 21
+
+# live
 python3 evaluate_saved_model.py --horizon 21 --model xgboost
 python3 -m streamlit run app.py
 ```
@@ -139,9 +175,15 @@ In the UI:
 
 ## 8. Closing (1 min)
 
-The honest summary: a cross-sectional IC around 0.04-0.06 with a t-statistic near
-2 is a normal, usable result in equity research — not a money machine. The value
-of the project is that it *measures* that correctly, quantifies its own
-uncertainty, and would show a null result just as clearly if there were one.
+The honest summary: a cross-sectional IC around 0.04 with a t-statistic of 1.5 is
+a normal, usable, **not yet decisive** result in equity research — not a money
+machine. The value of the project is that it measures that correctly.
+
+Three things it reports that it could easily have hidden: the market-return model
+earned a weight of zero, the uncertainty estimate does not improve decisions, and
+one acceptance gate fails. Every selection decision was made on purged
+walk-forward folds and the test period was treated as a development holdout,
+because it has been looked at too many times to be anything else. A system that
+reports its own null results is the deliverable.
 
 Academic research and simulation only. Not financial advice.

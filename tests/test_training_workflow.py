@@ -43,7 +43,9 @@ class TrainingWorkflowTest(unittest.TestCase):
         self.assertEqual(horizons, [1, 5, 21])
         preload_training_data.assert_called_once()
         train_lstm_models_for_horizons.assert_called_once_with(config, [1, 5, 21], walk_forward=False)
-        train_xgboost_models_for_horizons.assert_called_once_with(config, [1, 5, 21], walk_forward=False)
+        train_xgboost_models_for_horizons.assert_called_once_with(
+            config, [1, 5, 21], walk_forward=False, grid_search=False, permutation=False
+        )
 
     def test_trains_single_horizon_and_runs_comparisons_when_requested(self):
         config = {
@@ -120,7 +122,9 @@ class TrainingWorkflowTest(unittest.TestCase):
 
         self.assertEqual(horizons, [21, 252])
         train_lstm_models_for_horizons.assert_called_once_with(config, [21, 252], walk_forward=False)
-        train_xgboost_models_for_horizons.assert_called_once_with(config, [21, 252], walk_forward=False)
+        train_xgboost_models_for_horizons.assert_called_once_with(
+            config, [21, 252], walk_forward=False, grid_search=False, permutation=False
+        )
 
 
 if __name__ == "__main__":

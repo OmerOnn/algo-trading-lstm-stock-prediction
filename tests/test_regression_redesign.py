@@ -6,7 +6,7 @@ import pandas as pd
 from src.backtest import BacktestConfig, backtest_signals, build_signal_frame, tune_signal_threshold
 from src.dataset import StockSequenceDataset
 from src.regression import add_model_target, decode_model_output, regression_metrics
-from train import chronological_train_validation_test_split
+from src.validation import chronological_train_validation_test_split
 
 
 class RegressionRedesignTest(unittest.TestCase):
@@ -66,9 +66,11 @@ class RegressionRedesignTest(unittest.TestCase):
             index=dates,
         )
         dataset = StockSequenceDataset(frame, ["feature"], window_size=3)
-        features, _, _, _ = dataset[0]
+        features, _, _, _, date_code = dataset[0]
         np.testing.assert_allclose(features.numpy().ravel(), [0.0, 1.0, 2.0])
         self.assertEqual(dataset.metadata[0]["date"], str(dates[2].date()))
+        # Date codes are chronological, so the first sequence carries code 0.
+        self.assertEqual(int(date_code), 0)
 
     def test_predictive_score_rewards_a_useful_regression_forecast(self):
         actual = np.asarray([-0.08, -0.02, 0.01, 0.05, 0.09])

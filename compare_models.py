@@ -38,7 +38,7 @@ def main() -> None:
     horizon = int(args.horizon) if args.horizon is not None else load_default_horizon()
 
     print(f"Running full model comparison for horizon={horizon}")
-    run_command(["train.py", "--horizon", str(horizon)])
+    run_command(["train_lstm.py", "--horizon", str(horizon)])
     run_command(["train_xgboost.py", "--horizon", str(horizon)])
     run_command(["compare_results.py", "--horizon", str(horizon)])
 

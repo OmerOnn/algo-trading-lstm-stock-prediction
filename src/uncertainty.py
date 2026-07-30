@@ -98,7 +98,7 @@ def mc_dropout_predict_loader(
     if progress_label:
         print(f"Monte Carlo dropout ({passes} passes) over {progress_label}...")
 
-    for x, _, y_return, target_scale in loader:
+    for x, _, y_return, target_scale, *_ in loader:
         if device is not None:
             x = x.to(device, non_blocking=(device.type == "cuda"))
         samples = torch.stack([model(x).float().cpu() for _ in range(passes)])
@@ -363,6 +363,270 @@ def interval_metrics(
         "above_interval_rate": float(np.mean(above)),
         "sample_size": int(len(true_values)),
     }
+
+
+# ---------------------------------------------------------------------------
+# Is the uncertainty estimate actually useful?
+#
+# Marginal coverage near the nominal level is necessary but nowhere near
+# sufficient. An interval can hit 80% coverage overall while being far too narrow
+# for volatile stocks and far too wide for calm ones -- averaging to the right
+# answer by being wrong in both directions. The functions below test that, and
+# test whether the sigma estimate carries any decision-relevant information at
+# all. If it does not, the honest response is to simplify the decision layer
+# rather than keep the machinery for appearance.
+# ---------------------------------------------------------------------------
+
+
+def conditional_coverage(
+    true_return: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    conditioning_variable: np.ndarray,
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+    buckets: int = 5,
+    label: str = "bucket",
+) -> list[dict]:
+    """
+    Coverage and width within buckets of a conditioning variable.
+
+    Splitting by trailing volatility answers "is the band the right width for
+    *this* stock?", and splitting by forecast magnitude answers "is the band the
+    right width when the model is making a strong claim?" — the case that
+    actually drives decisions. A band that only achieves its nominal coverage on
+    average is not calibrated where it matters.
+    """
+    truth = np.asarray(true_return, dtype=float)
+    low = np.asarray(lower, dtype=float)
+    high = np.asarray(upper, dtype=float)
+    conditioning = np.asarray(conditioning_variable, dtype=float)
+
+    finite = np.isfinite(truth) & np.isfinite(low) & np.isfinite(high) & np.isfinite(conditioning)
+    truth, low, high, conditioning = truth[finite], low[finite], high[finite], conditioning[finite]
+    if len(truth) < int(buckets) * 10:
+        return []
+
+    edges = np.quantile(conditioning, np.linspace(0.0, 1.0, int(buckets) + 1))
+    edges = np.unique(edges)
+    if len(edges) < 3:
+        return []
+
+    rows: list[dict] = []
+    for index in range(len(edges) - 1):
+        low_edge, high_edge = edges[index], edges[index + 1]
+        if index == len(edges) - 2:
+            mask = (conditioning >= low_edge) & (conditioning <= high_edge)
+        else:
+            mask = (conditioning >= low_edge) & (conditioning < high_edge)
+        if not mask.any():
+            continue
+        inside = (truth[mask] >= low[mask]) & (truth[mask] <= high[mask])
+        coverage = float(inside.mean())
+        rows.append(
+            {
+                label: index + 1,
+                "range_low": float(low_edge),
+                "range_high": float(high_edge),
+                "sample_size": int(mask.sum()),
+                "coverage_picp": coverage,
+                "coverage_error": coverage - float(confidence_level),
+                "mean_interval_width": float(np.mean(high[mask] - low[mask])),
+                "mean_absolute_error": float(np.mean(np.abs(truth[mask]))),
+            }
+        )
+    return rows
+
+
+def conditional_coverage_report(
+    true_return: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    prediction: np.ndarray,
+    volatility_scale: np.ndarray,
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+    buckets: int = 5,
+) -> dict:
+    """Conditional coverage by volatility regime and by forecast magnitude."""
+    by_volatility = conditional_coverage(
+        true_return, lower, upper, volatility_scale, confidence_level, buckets, "volatility_bucket"
+    )
+    by_magnitude = conditional_coverage(
+        true_return,
+        lower,
+        upper,
+        np.abs(np.asarray(prediction, dtype=float)),
+        confidence_level,
+        buckets,
+        "magnitude_bucket",
+    )
+
+    def worst_error(rows: list[dict]) -> float:
+        if not rows:
+            return 0.0
+        return float(max(abs(row["coverage_error"]) for row in rows))
+
+    return {
+        "nominal_confidence_level": float(confidence_level),
+        "by_volatility_regime": by_volatility,
+        "by_prediction_magnitude": by_magnitude,
+        "worst_absolute_coverage_error_by_volatility": worst_error(by_volatility),
+        "worst_absolute_coverage_error_by_magnitude": worst_error(by_magnitude),
+        "note": (
+            "marginal coverage can hit its target while every bucket misses it in "
+            "alternating directions; these tables are what reveal that"
+        ),
+    }
+
+
+def uncertainty_filter_benefit(
+    dates: Sequence,
+    true_return: np.ndarray,
+    prediction: np.ndarray,
+    sigma: np.ndarray,
+    horizon: int = 21,
+    keep_fractions: Sequence[float] = (1.0, 0.75, 0.50, 0.25),
+) -> dict:
+    """
+    Does discarding the least certain forecasts actually improve performance?
+
+    Forecasts are ranked by ``|prediction| / sigma`` and the top fraction kept.
+    If the sigma estimate carries information, keeping the most confident half
+    should raise the information coefficient of what remains. If IC is flat or
+    falls as the filter tightens, sigma is not measuring anything decision-useful
+    and the uncertainty-aware decision rule is not earning its complexity —
+    which is a result worth reporting rather than hiding.
+    """
+    truth = np.asarray(true_return, dtype=float)
+    predicted = np.asarray(prediction, dtype=float)
+    sigma_values = np.maximum(np.asarray(sigma, dtype=float), 1e-12)
+    date_values = pd.to_datetime(pd.Series(list(dates))).to_numpy()
+
+    finite = np.isfinite(truth) & np.isfinite(predicted) & np.isfinite(sigma_values)
+    truth, predicted, sigma_values = truth[finite], predicted[finite], sigma_values[finite]
+    date_values = date_values[finite]
+    if len(truth) < 100:
+        return {"evaluated": False, "reason": "not enough rows to evaluate a filter"}
+
+    confidence = np.abs(predicted) / sigma_values
+    order = np.argsort(-confidence)
+
+    from src.regression import cross_sectional_metrics, regression_metrics
+
+    rows: list[dict] = []
+    for fraction in keep_fractions:
+        keep = max(50, int(round(len(order) * float(fraction))))
+        selected = order[:keep]
+        metrics = cross_sectional_metrics(
+            date_values[selected], truth[selected], predicted[selected], horizon=horizon
+        )
+        point = regression_metrics(truth[selected], predicted[selected])
+        rows.append(
+            {
+                "keep_fraction": float(fraction),
+                "rows_kept": int(keep),
+                "cross_sectional_ic": float(metrics["mean_ic"]),
+                "icir": float(metrics["icir"]),
+                "direction_accuracy": float(point["direction_accuracy"]),
+                "mae": float(point["mae"]),
+                "mean_absolute_prediction": float(np.mean(np.abs(predicted[selected]))),
+            }
+        )
+
+    baseline = rows[0]["cross_sectional_ic"] if rows else 0.0
+    tightest = rows[-1]["cross_sectional_ic"] if rows else 0.0
+    return {
+        "evaluated": True,
+        "criterion": "rank by |prediction| / sigma, keep the most confident fraction",
+        "levels": rows,
+        "ic_unfiltered": float(baseline),
+        "ic_most_filtered": float(tightest),
+        "ic_improvement_from_filtering": float(tightest - baseline),
+        "filtering_helps": bool(tightest > baseline),
+    }
+
+
+def mondrian_interval_calibration(
+    true_return: np.ndarray,
+    prediction: np.ndarray,
+    model_std: np.ndarray,
+    target_scale: np.ndarray,
+    regime: np.ndarray,
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+    minimum_sigma: float = 0.005,
+    minimum_group_size: int = 200,
+) -> dict[str, "IntervalCalibration"]:
+    """
+    Fit a separate conformal multiplier per regime (Mondrian conformal prediction).
+
+    Split conformal guarantees *marginal* coverage only. If errors are much
+    fatter in high-volatility regimes, one global multiplier under-covers there
+    and over-covers elsewhere. Conditioning the multiplier on a regime label
+    restores approximate conditional coverage, and because each group is
+    calibrated on its own residuals the finite-sample guarantee still holds
+    within the group.
+
+    Groups smaller than ``minimum_group_size`` fall back to the pooled
+    multiplier: a conformal quantile estimated from a handful of points is
+    noisier than the miscalibration it is trying to fix.
+    """
+    regime_labels = np.asarray(regime)
+    pooled = fit_interval_calibration(
+        true_return,
+        prediction,
+        model_std,
+        target_scale,
+        confidence_level=confidence_level,
+        minimum_sigma=minimum_sigma,
+    )
+    pooled.method = f"{pooled.method} [pooled]"
+
+    calibrations: dict[str, IntervalCalibration] = {"__pooled__": pooled}
+    for label in np.unique(regime_labels[~pd.isna(regime_labels)]):
+        mask = regime_labels == label
+        if int(mask.sum()) < int(minimum_group_size):
+            calibrations[str(label)] = pooled
+            continue
+        group = fit_interval_calibration(
+            np.asarray(true_return)[mask],
+            np.asarray(prediction)[mask],
+            np.asarray(model_std)[mask],
+            np.asarray(target_scale)[mask],
+            confidence_level=confidence_level,
+            minimum_sigma=minimum_sigma,
+        )
+        group.method = f"{group.method} [mondrian: {label}]"
+        calibrations[str(label)] = group
+    return calibrations
+
+
+def apply_mondrian_intervals(
+    calibrations: dict[str, "IntervalCalibration"],
+    prediction: np.ndarray,
+    model_std: np.ndarray,
+    target_scale: np.ndarray,
+    regime: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build intervals row by row using each row's regime-specific calibration."""
+    predictions = np.asarray(prediction, dtype=float)
+    lower = np.empty_like(predictions)
+    upper = np.empty_like(predictions)
+    sigma = np.empty_like(predictions)
+    regime_labels = np.asarray(regime)
+    pooled = calibrations.get("__pooled__")
+
+    for label in np.unique(regime_labels[~pd.isna(regime_labels)]):
+        mask = regime_labels == label
+        calibration = calibrations.get(str(label), pooled)
+        if calibration is None:
+            continue
+        group_lower, group_upper, group_sigma = calibration.interval(
+            predictions[mask],
+            np.asarray(model_std)[mask],
+            np.asarray(target_scale)[mask],
+        )
+        lower[mask], upper[mask], sigma[mask] = group_lower, group_upper, group_sigma
+
+    return lower, upper, sigma
 
 
 # ---------------------------------------------------------------------------

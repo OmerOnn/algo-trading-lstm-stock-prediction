@@ -82,9 +82,12 @@ def main() -> None:
         f"Rows                    : train {metrics.get('train_size', 0):,} | "
         f"validation {metrics.get('validation_size', 0):,} | test {metrics.get('test_size', 0):,}"
     )
-    drift = metrics.get("market_drift", {})
+    drift = metrics.get("market_model") or metrics.get("market_drift", {})
     if drift:
-        print(f"Market drift (train)    : {drift.get('market_drift', 0.0) * 100:+.2f}% over the horizon")
+        drift_value = float(drift.get("drift", drift.get("market_drift", 0.0)))
+        print(f"Market drift (train)    : {drift_value * 100:+.2f}% over the horizon")
+        if "shrinkage" in drift:
+            print(f"Market model shrinkage  : {float(drift['shrinkage']):.3f} (0 = constant drift only)")
     print(
         f"Split                   : {metrics.get('split_method', 'n/a')}, "
         f"purge {metrics.get('purge_trading_days', 0)} sessions"
@@ -95,7 +98,11 @@ def main() -> None:
         print_point_metrics(component, "Test metrics - modelled component (market-excess return)")
     print_point_metrics(metrics.get("test_metrics", {}), "Test metrics - total return (what the user sees)")
 
-    baselines = metrics.get("regression_baselines_excess") or metrics.get("regression_baselines")
+    baselines = (
+        metrics.get("regression_baselines_component")
+        or metrics.get("regression_baselines_excess")
+        or metrics.get("regression_baselines")
+    )
     if baselines:
         section("Baseline comparison (same test rows)")
         rows = []

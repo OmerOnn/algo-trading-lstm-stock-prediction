@@ -80,10 +80,22 @@ class DataPipelineValidationTest(unittest.TestCase):
         except ModuleNotFoundError as exc:
             self.skipTest(f"prediction dependencies are not installed: {exc.name}")
 
+        # Inference now needs a universe, not a single ticker: cross-sectional
+        # ranks, breadth, dispersion and the sector composites are defined
+        # relative to the other stocks on the same date, so they cannot be
+        # produced for one ticker in isolation.
         config = {
             "start_date": "2018-01-01",
             "end_date": None,
             "benchmark_ticker": "SPY",
+            "tickers": ["NFLX", "AAPL", "MSFT", "XOM"],
+            "ticker_sectors": {
+                "NFLX": "Communication Services",
+                "AAPL": "Information Technology",
+                "MSFT": "Information Technology",
+                "XOM": "Energy",
+            },
+            "minimum_sector_members": 2,
             "macro_tickers": {
                 "vix": "^VIX",
                 "treasury_10y": "^TNX",
@@ -125,6 +137,43 @@ class DataPipelineValidationTest(unittest.TestCase):
         self.assertGreaterEqual(len(features), 500)
         self.assertEqual(features["Ticker"].iloc[-1], "NFLX")
         self.assertFalse(features[feature_columns].isna().any().any())
+
+    def test_inference_rejects_a_ticker_outside_the_universe(self):
+        """
+        A ticker with no cross-section cannot be served, and must say so clearly.
+
+        Cross-sectional features are defined relative to the universe, so a name
+        that is not in it has no rank, no sector composite and no dispersion
+        context. Failing with an explanation beats silently emitting a forecast
+        built from missing context.
+        """
+        try:
+            from predict import build_latest_features, build_universe_panel
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"prediction dependencies are not installed: {exc.name}")
+
+        import predict
+
+        predict._UNIVERSE_PANEL_CACHE.clear()
+        config = {
+            "start_date": "2018-01-01",
+            "end_date": None,
+            "benchmark_ticker": "SPY",
+            "tickers": ["AAPL", "MSFT"],
+            "minimum_sector_members": 2,
+            "macro_tickers": {},
+        }
+
+        def fake_download_price_data(ticker, start, end):
+            return make_ohlcv_frame(ticker=ticker)
+
+        with patch("predict.download_price_data", side_effect=fake_download_price_data), patch(
+            "predict.download_macro_data", return_value=pd.DataFrame()
+        ), patch("predict.download_earnings_data", return_value=pd.DataFrame()):
+            with self.assertRaises(ValueError) as caught:
+                build_latest_features("TSLA", config, ["return_1d"], horizon=10)
+        self.assertIn("universe", str(caught.exception).lower())
+        predict._UNIVERSE_PANEL_CACHE.clear()
 
     def test_dataset_cache_roundtrip_preserves_features(self):
         stock_df = make_ohlcv_frame(ticker="CACHE")

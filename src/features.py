@@ -96,6 +96,33 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     volume_std = volume.rolling(60).std()
     out["volume_zscore_60d"] = (volume - volume_mean) / volume_std
 
+    # --- Liquidity and turnover ---------------------------------------------
+    # Traded value rather than share count: a share count is not comparable
+    # across stocks (or across splits), while dollar volume is. Only relative
+    # forms are kept as features -- the raw level grows with market
+    # capitalisation and inflation across a twenty-year sample, so a model could
+    # use it to identify the era rather than the liquidity state.
+    dollar_volume = close * volume
+    out["dollar_volume_20d"] = dollar_volume.rolling(20).mean()
+    dollar_volume_mean_60 = dollar_volume.rolling(60).mean()
+    dollar_volume_std_60 = dollar_volume.rolling(60).std()
+    out["dollar_volume_zscore_60d"] = (
+        dollar_volume - dollar_volume_mean_60
+    ) / dollar_volume_std_60.replace(0, np.nan)
+    out["dollar_volume_trend_20d"] = out["dollar_volume_20d"] / dollar_volume.rolling(
+        60
+    ).mean().replace(0, np.nan) - 1.0
+
+    # Amihud illiquidity: absolute return per dollar traded, i.e. how much the
+    # price has to move to absorb a unit of volume. Log-scaled because the raw
+    # ratio spans many orders of magnitude across the universe.
+    amihud = (out["return_1d"].abs() / dollar_volume.replace(0, np.nan)).rolling(20).mean()
+    out["amihud_illiquidity_20d"] = np.log1p(amihud * 1e9)
+
+    # Range-based liquidity proxy that does not depend on volume reporting at
+    # all, so it stays meaningful where volume data is unreliable.
+    out["high_low_range_20d"] = ((high - low) / close.replace(0, np.nan)).rolling(20).mean()
+
     return out
 
 
@@ -296,27 +323,73 @@ def add_labels(
     return out
 
 
+MARKET_WIDE_PREFIXES = ("benchmark_", "macro_", "marketstate_")
+
+# Market-wide columns that do not carry one of the prefixes.
+MARKET_WIDE_COLUMNS = frozenset({"universe_return_1d"})
+
+
 def is_market_wide_feature(column: str) -> bool:
     """
     True for features whose value is identical for every ticker on a given date.
 
-    Benchmark and macro columns describe the market state, not the stock. When
-    the target is market-excess return they cannot contribute anything to a
+    Benchmark, macro and market-state columns describe the market, not the stock.
+    Against a market-excess target they cannot contribute anything to a
     cross-sectional ranking -- but they do give the model a way to identify
     *which date* a sequence came from, and therefore to memorise that date's
-    cross-sectional noise. Excluding them removes the memorisation channel
-    without removing any usable signal.
+    cross-sectional noise. Measured effect on this panel: including them cost
+    roughly 0.05 of test IC and drove validation error up from epoch 1.
+
+    They are excluded from the *stock* model's inputs only. They remain in the
+    panel, and they are used in two places where they cannot leak a date
+    fingerprint into a per-stock ranking: the market-return model (which
+    predicts one number per date and so is entitled to date-level features), and
+    the regime-interaction features, whose stock-specific leg makes them vary
+    across the cross-section.
     """
-    return column.startswith("benchmark_") or column.startswith("macro_")
+    return column in MARKET_WIDE_COLUMNS or column.startswith(MARKET_WIDE_PREFIXES)
 
 
-def get_feature_columns(df: pd.DataFrame, exclude_market_wide: bool = False) -> list[str]:
+# Market-wide columns that must never become market-model inputs.
+#   benchmark_future_return : the market model's own label.
+#   benchmark_close         : a raw index level. Over a twenty-year sample it is
+#                             monotonically trending, so it identifies the era
+#                             rather than the market state and lets a tree
+#                             memorise "in 2021 the market went up".
+MARKET_MODEL_EXCLUDED = frozenset({"benchmark_future_return", "benchmark_close"})
+
+
+def market_wide_feature_columns(df: pd.DataFrame) -> list[str]:
+    """The date-level columns the market-return model is allowed to consume."""
+    return [
+        column
+        for column in df.columns
+        if is_market_wide_feature(column)
+        and column not in MARKET_MODEL_EXCLUDED
+        and pd.api.types.is_numeric_dtype(df[column])
+    ]
+
+
+def get_feature_columns(
+    df: pd.DataFrame,
+    exclude_market_wide: bool = False,
+    blocklist: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    """
+    The numeric columns a stock model may train on.
+
+    ``blocklist`` drops named features after every other rule has been applied.
+    It exists so the permutation-importance stage can retire a feature that
+    measurably hurts out-of-fold performance without editing feature code.
+    """
     excluded = {
         "Ticker",
+        "sector",
         "future_return",
         "future_excess_return",
         "benchmark_future_return",
         "benchmark_close",
+        "market_future_return_prediction",
         "model_target",
         "target_scale",
         "Open",
@@ -340,6 +413,7 @@ def get_feature_columns(df: pd.DataFrame, exclude_market_wide: bool = False) -> 
         "bb_upper_20",
         "bb_lower_20",
         "volume_sma_20",
+        "dollar_volume_20d",
         # Snapshot earnings values are not guaranteed point-in-time historical data.
         "eps_estimate",
         "reported_eps",
@@ -352,4 +426,7 @@ def get_feature_columns(df: pd.DataFrame, exclude_market_wide: bool = False) -> 
     ]
     if exclude_market_wide:
         columns = [col for col in columns if not is_market_wide_feature(col)]
+    if blocklist:
+        blocked = {str(name) for name in blocklist}
+        columns = [col for col in columns if col not in blocked]
     return columns

@@ -5,12 +5,8 @@ import sys
 
 from src.data_download import preload_training_data
 from src.device import get_best_device
-from train import (
-    get_horizons,
-    load_config,
-    parse_horizon_list,
-    train_models_for_horizons as train_lstm_models_for_horizons,
-)
+from src.training_common import get_horizons, load_config, parse_horizon_list
+from train_lstm import train_models_for_horizons as train_lstm_models_for_horizons
 from train_xgboost import resolve_xgboost_backend
 from train_xgboost import train_models_for_horizons as train_xgboost_models_for_horizons
 
@@ -41,6 +37,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also run purged walk-forward validation for both model families.",
     )
+    parser.add_argument(
+        "--grid-search",
+        action="store_true",
+        help="Run the documented XGBoost hyperparameter grid on purged folds.",
+    )
+    parser.add_argument(
+        "--permutation-importance",
+        action="store_true",
+        help="Compute out-of-fold permutation importance and recommend a feature blocklist.",
+    )
+    parser.add_argument(
+        "--blend",
+        action="store_true",
+        help="Fit the constrained LSTM/XGBoost blend after both families finish.",
+    )
     return parser.parse_args()
 
 
@@ -49,6 +60,9 @@ def train_all_models(
     selected_horizons: list[int] | None = None,
     compare: bool = False,
     walk_forward: bool = False,
+    grid_search: bool = False,
+    permutation_importance: bool = False,
+    blend: bool = False,
 ) -> list[int]:
     config = load_config()
     horizons = get_horizons(config, selected_horizon, selected_horizons)
@@ -85,7 +99,26 @@ def train_all_models(
     )
 
     train_lstm_models_for_horizons(config, horizons, walk_forward=walk_forward)
-    train_xgboost_models_for_horizons(config, horizons, walk_forward=walk_forward)
+    train_xgboost_models_for_horizons(
+        config,
+        horizons,
+        walk_forward=walk_forward,
+        grid_search=grid_search,
+        permutation=permutation_importance,
+    )
+
+    if blend:
+        # The blend needs out-of-fold predictions from both families, which only
+        # a walk-forward run produces.
+        from blend_models import main as blend_main
+
+        for horizon in horizons:
+            original_argv = sys.argv[:]
+            try:
+                sys.argv = ["blend_models.py", "--horizon", str(horizon)]
+                blend_main()
+            finally:
+                sys.argv = original_argv
 
     if compare:
         from compare_results import main as compare_results_main
@@ -111,6 +144,9 @@ def main() -> None:
         selected_horizons=selected_horizons,
         compare=args.compare,
         walk_forward=bool(args.walk_forward),
+        grid_search=bool(args.grid_search),
+        permutation_importance=bool(args.permutation_importance),
+        blend=bool(args.blend),
     )
 
 

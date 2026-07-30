@@ -110,6 +110,139 @@ tickers:
 
 benchmark_ticker: SPY
 
+# GICS-style sector for each ticker, used to build sector composites.
+#
+# Sector returns are the equal-weight average of the sector's members inside this
+# universe, not a sector ETF. XLC only launched in June 2018 and XLRE in October
+# 2015, so ETF-based sector returns would be missing for a third of the sample
+# and would delete every pre-2018 row for the communication-services names. A
+# composite of the actual universe exists from the first date and is the more
+# precise benchmark for these particular stocks.
+#
+# Sectors with fewer than minimum_sector_members names fall back to the
+# whole-universe composite: a one-stock sector would make sector-relative
+# momentum identically zero, which is a constant rather than a feature.
+ticker_sectors:
+  # Information Technology (22)
+  AAPL: "Information Technology"
+  MSFT: "Information Technology"
+  NVDA: "Information Technology"
+  AVGO: "Information Technology"
+  ORCL: "Information Technology"
+  CRM: "Information Technology"
+  AMD: "Information Technology"
+  ADBE: "Information Technology"
+  ACN: "Information Technology"
+  CSCO: "Information Technology"
+  IBM: "Information Technology"
+  QCOM: "Information Technology"
+  TXN: "Information Technology"
+  INTU: "Information Technology"
+  NOW: "Information Technology"
+  AMAT: "Information Technology"
+  PANW: "Information Technology"
+  ADI: "Information Technology"
+  MU: "Information Technology"
+  ANET: "Information Technology"
+  KLAC: "Information Technology"
+  LRCX: "Information Technology"
+  # Communication Services (8)
+  META: "Communication Services"
+  GOOGL: "Communication Services"
+  GOOG: "Communication Services"
+  NFLX: "Communication Services"
+  VZ: "Communication Services"
+  DIS: "Communication Services"
+  CMCSA: "Communication Services"
+  T: "Communication Services"
+  # Consumer Discretionary (8)
+  AMZN: "Consumer Discretionary"
+  TSLA: "Consumer Discretionary"
+  HD: "Consumer Discretionary"
+  MCD: "Consumer Discretionary"
+  LOW: "Consumer Discretionary"
+  BKNG: "Consumer Discretionary"
+  TJX: "Consumer Discretionary"
+  SBUX: "Consumer Discretionary"
+  # Consumer Staples (7)
+  COST: "Consumer Staples"
+  WMT: "Consumer Staples"
+  PG: "Consumer Staples"
+  KO: "Consumer Staples"
+  PEP: "Consumer Staples"
+  PM: "Consumer Staples"
+  MDLZ: "Consumer Staples"
+  # Financials (15)
+  BRK-B: "Financials"
+  JPM: "Financials"
+  V: "Financials"
+  MA: "Financials"
+  BAC: "Financials"
+  GS: "Financials"
+  BLK: "Financials"
+  MS: "Financials"
+  SCHW: "Financials"
+  CB: "Financials"
+  MMC: "Financials"
+  C: "Financials"
+  SPGI: "Financials"
+  PGR: "Financials"
+  FI: "Financials"
+  # Health Care (20)
+  LLY: "Health Care"
+  UNH: "Health Care"
+  JNJ: "Health Care"
+  ABBV: "Health Care"
+  MRK: "Health Care"
+  TMO: "Health Care"
+  ABT: "Health Care"
+  DHR: "Health Care"
+  AMGN: "Health Care"
+  ISRG: "Health Care"
+  PFE: "Health Care"
+  SYK: "Health Care"
+  ELV: "Health Care"
+  GILD: "Health Care"
+  BMY: "Health Care"
+  REGN: "Health Care"
+  CI: "Health Care"
+  BSX: "Health Care"
+  VRTX: "Health Care"
+  ZTS: "Health Care"
+  # Industrials (13)
+  GE: "Industrials"
+  CAT: "Industrials"
+  RTX: "Industrials"
+  UNP: "Industrials"
+  HON: "Industrials"
+  LMT: "Industrials"
+  DE: "Industrials"
+  UPS: "Industrials"
+  ETN: "Industrials"
+  BA: "Industrials"
+  WM: "Industrials"
+  ADP: "Industrials"
+  UBER: "Industrials"
+  # Energy (3)
+  XOM: "Energy"
+  CVX: "Energy"
+  COP: "Energy"
+  # Utilities (2)
+  NEE: "Utilities"
+  SO: "Utilities"
+  # Materials (1)
+  LIN: "Materials"
+  # Real Estate (1)
+  PLD: "Real Estate"
+
+minimum_sector_members: 3
+
+# Features retired by the permutation-importance stage because they were
+# unstable, consistently zero, or harmful across out-of-fold folds. Applied to
+# the feature list, never to the cached panel, so no rebuild is needed.
+feature_blocklist: []
+
+
 # Alternative / macro market data.
 # These are added to satisfy the project requirement of using financial data
 # together with alternative / macro indicators.
@@ -203,6 +336,22 @@ dropout: 0.35
 # much stronger regulariser than weight decay alone.
 input_dropout: 0.25
 batch_size: 256
+
+# Batches made of whole date cross-sections, so the ranking term of the loss has
+# a real cross-section to work with. "shuffled" restores plain row sampling.
+lstm_batching: "date_grouped"
+dates_per_batch: 3
+max_rows_per_batch: 4096
+
+# Variational (timestep-shared) dropout on the recurrent output. The fused
+# LSTM kernels do not expose their internal gates, so a true recurrent-gate mask
+# is not available without giving up the fused kernel.
+recurrent_dropout: 0.0
+
+# Optional auxiliary regression heads on other horizons. All heads are
+# regression heads and the saved forecast is always the selected horizon.
+auxiliary_horizons: []
+
 learning_rate: 0.0002
 epochs: 40
 weight_decay: 0.0005
@@ -231,13 +380,35 @@ walk_forward:
 # Checkpoint on the mean per-date cross-sectional information coefficient: the
 # quantity a stock-selection model can actually learn. Pooled MAE or correlation
 # reward a constant forecast, which is why earlier runs peaked at epoch 1.
-early_stopping_metric: "cross_sectional_ic"
+# Checkpoint on a criterion that requires BOTH magnitude and ranking skill:
+#   validation_selection_score = cross_sectional_ic
+#                              + selection_score_magnitude_weight * mse_skill
+# MSE alone rewards a constant forecast (which is why earlier runs peaked at
+# epoch 1); IC alone rewards a model that ranks well while reporting wrong
+# percentages. Requiring both rules out each failure mode.
+early_stopping_metric: "validation_selection_score"
+selection_score_magnitude_weight: 0.25
 early_stopping_patience: 6
 early_stopping_min_delta: 0.0002
 max_grad_norm: 1.0
+# Composite objective. MSE genuinely contributes to the gradient -- it is not
+# merely reported afterwards -- because the product promises an expected
+# percentage return, so magnitude has to be optimised, not only ordering.
+#   mse    : makes the magnitude meaningful
+#   huber  : caps the gradient of extreme return events on a fat-tailed panel
+#   ic     : the only term that rewards getting the cross-sectional ordering right
+# Selected by purged walk-forward comparison of pure_mse, pure_huber, mse_huber
+# and mse_huber_ic at an identical epoch budget. This configuration won on all
+# three folds (mean IC +0.0371, std 0.0214) and was also the most stable; adding
+# the date-IC term to mse_huber was the largest single improvement in the table.
+# It is ~5x slower per epoch because the grouped correlation is computed on every
+# batch. See reports/experiments/experiment_lstm_loss_h21.md.
 regression_loss:
+  mse_weight: 0.40
+  huber_weight: 0.40
+  cross_sectional_ic_weight: 0.20
   huber_beta: 0.5
-  correlation_weight: 0.15
+  minimum_names_per_date: 5
 lr_scheduler_patience: 2
 lr_scheduler_factor: 0.5
 minimum_learning_rate: 0.000001
@@ -265,6 +436,40 @@ decision:
   position_sizing: "binary"        # "binary" or "confidence"
   min_direction_probability: 0.0
 
+# --- Stage 1: the market-return model ----------------------------------------
+# expected_stock_return = beta * expected_market_return + expected_stock_residual
+#
+# The market leg comes from a ridge regression on date-level market-state
+# features, shrunk towards the training-window historical drift. The shrinkage
+# weight is chosen from agreement across purged folds, so market-return skill has
+# to repeat before it is allowed to move a stock forecast. On this panel the folds
+# disagreed and the selected weight was 0.000, which reduces the composition to
+# the constant drift exactly -- a month-ahead index forecast did not generalise.
+market_model:
+  ridge_alpha: 10.0
+  maximum_shrinkage: 0.60
+
+# --- Portfolio construction (fully invested, for a fair comparison) ----------
+# The signal backtest holds cash whenever no name clears the hurdle, which left
+# it ~17-31% invested; comparing that to 100%-invested buy-and-hold is not a fair
+# test. The top-k portfolio is always fully invested, so the difference against
+# the equal-weight universe is attributable to selection rather than exposure.
+portfolio:
+  top_k: 20
+  top_quantile: 0.20
+
+# --- Acceptance gates --------------------------------------------------------
+# Pre-registered pass/fail criteria. Reported, never optimised against.
+acceptance_thresholds:
+  walk_forward_mean_ic: 0.03
+  ic_t_statistic: 2.0
+  minimum_coverage_error: 0.05
+  maximum_normalized_interval_width: 3.0
+  regime_collapse_ic: 0.0
+
+# Repeats per feature for out-of-fold permutation importance.
+permutation_repeats: 2
+
 # --- Backtesting -------------------------------------------------------------
 initial_cash: 10000
 transaction_cost_pct: 0.001    # 0.10% per trade
@@ -288,12 +493,26 @@ backtest_output_path: "reports/backtest_results.csv"
 plots_output_dir: "reports/plots"
 
 # XGBoost settings - second model family for a like-for-like comparison.
-# Early stopping minimises negative Spearman correlation rather than RMSE:
-# on a near-unpredictable target RMSE is optimised by shrinking every prediction
-# towards the mean, which is exactly the collapse to a constant we must avoid.
+#
+# There is deliberately no early-stopping setting. Boosters are fitted once to
+# n_estimators rounds and then *scored at a ladder of iteration counts* on purged
+# walk-forward folds, using per-date cross-sectional IC plus magnitude skill; one
+# fit yields the whole curve via iteration_range. XGBoost's own early stopping
+# could only optimise a pooled metric, and the quantity that matters here is an
+# average of per-date correlations, which its callback interface cannot express.
+#
+# n_estimators is therefore an upper bound on the search, not the number of trees
+# that ship. No minimum-round floor is applied: the previous version reported
+# best_iteration = 0 and then silently used 50 trees, so the recorded number
+# described nothing that had happened.
+#
+# max_depth 5 is the configured baseline; --grid-search compares it against
+# depth 3 / 7 and the other documented one-at-a-time variants on folds. On this
+# panel the grid selected depth 3.
 xgboost:
   device: auto
-  n_estimators: 800
+  objective: "reg:squarederror"   # "reg:pseudohubererror" is compared in the grid
+  n_estimators: 800               # upper bound for the round ladder, not a final count
   max_depth: 5
   learning_rate: 0.02
   subsample: 0.8
@@ -301,5 +520,4 @@ xgboost:
   min_child_weight: 20.0
   reg_alpha: 0.10
   reg_lambda: 3.0
-  early_stopping_rounds: 100
   random_state: 42
