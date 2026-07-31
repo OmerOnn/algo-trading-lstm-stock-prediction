@@ -87,6 +87,11 @@ def train_all_models(
         print("LSTM training is running on CPU because no supported GPU backend was selected.")
     print(f"XGBoost backend: {xgb_device.upper()}")
     print(xgb_backend_message)
+    if xgb_device == "cpu" and device_info.device.type == "mps":
+        print(
+            "This split is expected on a Mac: PyTorch supports Apple Metal, XGBoost does not. "
+            "XGBoost's only GPU backend is CUDA, so the LSTM uses the GPU and XGBoost uses CPU."
+        )
 
     preload_training_data(
         tickers=config["tickers"],

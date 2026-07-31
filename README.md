@@ -358,7 +358,27 @@ python3 check_device.py
 ```
 
 `device: "auto"` uses CUDA on NVIDIA, MPS/Metal on Apple Silicon, CPU otherwise.
-XGBoost supports GPU only through CUDA, so Apple Metal does not accelerate it.
+
+The two model families do not share a compute backend, and on a Mac they will
+not agree — this is expected, not a misconfiguration:
+
+| | LSTM (PyTorch) | XGBoost |
+|---|---|---|
+| Apple Silicon | GPU via MPS/Metal | **CPU only** |
+| NVIDIA | GPU via CUDA | GPU via CUDA, if the wheel was built with it |
+
+XGBoost's `device` parameter accepts only `cpu`, `cuda`, and `cuda:<ordinal>`;
+`mps` and `metal` are rejected by the library itself, and no release contains a
+Metal, MPS, or OpenCL tree builder. The `mps`/`metal`/`mac`/`apple` aliases in
+`configs/config.yaml` therefore resolve to CPU with an explanation rather than
+an error. `auto` selects CUDA only when the installed xgboost was *compiled*
+with CUDA **and** an NVIDIA GPU is present — the build flag is checked because
+`device="cuda"` on a CPU-only wheel does not fail, it warns and silently trains
+on CPU.
+
+`python3 check_device.py` reports both backends, and every training run prints
+the resolved XGBoost device with the build flags behind it and records them
+under `execution_backend` in the run metadata.
 
 The processed panel is cached under `data/cache/` as Parquet and versioned by
 `DATASET_SCHEMA_VERSION`; it rebuilds automatically when tickers, dates, macro

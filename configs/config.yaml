@@ -509,8 +509,25 @@ plots_output_dir: "reports/plots"
 # max_depth 5 is the configured baseline; --grid-search compares it against
 # depth 3 / 7 and the other documented one-at-a-time variants on folds. On this
 # panel the grid selected depth 3.
+#
+# device: XGBoost's only GPU backend is CUDA. Its device parameter accepts
+# cpu, cuda, and cuda:<ordinal> and nothing else — "mps" and "metal" are
+# rejected by the library itself, and no XGBoost release has a Metal, MPS, or
+# OpenCL tree builder. On Apple Silicon this therefore always resolves to cpu,
+# even though the LSTM is free to use the Apple GPU through PyTorch MPS. The
+# aliases mps/metal/mac/apple are accepted and resolve to cpu with an
+# explanation rather than an error. "auto" picks CUDA only when the installed
+# xgboost was actually compiled with CUDA *and* an NVIDIA GPU is present; the
+# build flag matters because device="cuda" on a CPU-only wheel does not fail,
+# it warns and silently trains on CPU.
+#
+# n_jobs: -1 means every core. Measured on this panel (484k rows x ~120
+# features, M4 Pro, 8 performance + 4 efficiency cores), restricting threads to
+# the performance cores was not faster than -1, so -1 is the default. Set an
+# explicit count only if profiling on your machine shows a win.
 xgboost:
-  device: auto
+  device: auto                    # auto | cpu | cuda (macOS always resolves to cpu)
+  n_jobs: -1
   objective: "reg:squarederror"   # "reg:pseudohubererror" is compared in the grid
   n_estimators: 800               # upper bound for the round ladder, not a final count
   max_depth: 5

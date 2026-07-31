@@ -26,7 +26,6 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
-import torch
 
 from src.boosting import (
     DEFAULT_ROUND_LADDER,
@@ -36,6 +35,7 @@ from src.boosting import (
     recommend_feature_blocklist,
     select_rounds,
 )
+from src.device import XGBoostBackend, resolve_xgboost_backend as resolve_xgboost_device
 from src.evaluation import build_forecast_table, evaluate_model, print_decile_table
 from src.features import market_wide_feature_columns
 from src.market_model import (
@@ -135,24 +135,35 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_xgboost_backend(config: dict) -> tuple[str, str]:
-    requested = str(config.get("xgboost", {}).get("device", "auto")).lower().strip()
-    aliases = {"gpu": "cuda", "metal": "mps", "mac": "mps", "apple": "mps"}
-    requested = aliases.get(requested, requested)
+def xgboost_backend(config: dict) -> XGBoostBackend:
+    """Resolve the backend XGBoost will actually run on for this config."""
+    xgb_cfg = config.get("xgboost", {}) or {}
+    return resolve_xgboost_device(
+        xgb_cfg.get("device", "auto"),
+        n_jobs=int(xgb_cfg.get("n_jobs", -1)),
+    )
 
-    if requested == "cuda":
-        if torch.cuda.is_available():
-            return "cuda", "CUDA GPU acceleration is active for XGBoost."
-        raise RuntimeError("XGBoost CUDA was requested, but no CUDA-capable NVIDIA GPU is available.")
-    if requested == "auto":
-        if torch.cuda.is_available():
-            return "cuda", "CUDA GPU acceleration is active for XGBoost."
-        return "cpu", "No CUDA-capable NVIDIA GPU detected, so XGBoost is running on CPU."
-    if requested == "mps":
-        return "cpu", "Apple Metal GPU is not supported by XGBoost, so it is running on CPU."
-    if requested == "cpu":
-        return "cpu", "XGBoost is configured to run on CPU."
-    raise ValueError("Invalid XGBoost device. Use one of: auto, cuda, gpu, cpu, mps, metal, mac, apple")
+
+def resolve_xgboost_backend(config: dict) -> tuple[str, str]:
+    """(device, human-readable message) — the shape the training entry points use."""
+    backend = xgboost_backend(config)
+    return backend.device, backend.message
+
+
+def print_xgboost_backend(backend: XGBoostBackend) -> None:
+    """Log the backend and the facts it was derived from.
+
+    The one-line summary alone is not enough to trust: "running on CPU" and
+    "running on CPU because the GPU claim was silently ignored" look identical
+    from the outside. Printing the build flags makes the resolution auditable
+    from the run log.
+    """
+    print(f"Execution backend: {backend.device.upper()} ({backend.accelerator})")
+    print(f"  {backend.message}")
+    if backend.device == "cpu":
+        print(f"  CPU threads: {backend.threads}")
+    for note in backend.notes:
+        print(f"  - {note}")
 
 
 def make_regressor(
@@ -181,7 +192,12 @@ def make_regressor(
         subsample=float(xgb_cfg.get("subsample", 0.8)),
         colsample_bytree=float(xgb_cfg.get("colsample_bytree", 0.6)),
         random_state=int(seed),
-        n_jobs=-1,
+        # -1 lets OpenMP use every core. On this panel that measured as fast as
+        # any hand-picked count on Apple Silicon, so the default is left alone
+        # and only exposed for machines where pinning threads helps.
+        n_jobs=int(xgb_cfg.get("n_jobs", -1)),
+        # "hist" is the fast CPU histogram builder and is also the builder the
+        # CUDA path uses, so the same setting is correct on both devices.
         tree_method="hist",
         device=device,
         reg_alpha=float(xgb_cfg.get("reg_alpha", 0.10)),
@@ -524,8 +540,9 @@ def train_for_horizon(
     print("\n" + "=" * 78)
     print(f"Training XGBoost regressor for {horizon} trading days ahead")
     print("=" * 78)
-    xgb_device, xgb_backend_message = resolve_xgboost_backend(config)
-    print(f"Execution backend: {xgb_device.upper()} - {xgb_backend_message}")
+    backend = xgboost_backend(config)
+    xgb_device = backend.device
+    print_xgboost_backend(backend)
 
     report_dir = ROOT / "reports"
     model_dir = ROOT / "models"
@@ -703,6 +720,7 @@ def train_for_horizon(
             "bootstrap_models": len(ensemble),
             "bootstrap_block_size": block_size,
             "xgboost_parameters": xgb_cfg,
+            "execution_backend": backend.to_dict(),
             "hyperparameter_grid": grid_report,
             "market_model_shrinkage_selection": shrinkage_report,
             "market_model_test_evaluation": market_evaluation,
