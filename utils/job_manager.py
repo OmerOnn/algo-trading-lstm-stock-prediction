@@ -37,7 +37,12 @@ def get_top_n_nodes_with_max_cpus_and_mem(
     mem_fraction: float = 0.9,
 ) -> List[Dict[str, int]]:
     """
-    Returns top N *CPU-only* nodes (no GPUs) sorted by idle CPUs.
+    Return the top N eligible nodes sorted by idle CPUs.
+
+    When ``cpu_partition`` and ``gpu_partition`` are different, only strict
+    CPU-only nodes are returned. When both names are ``gpu``, nodes from the GPU
+    partition are returned; the generated job script separately requests the
+    required GPU resource from Slurm.
 
     Each returned dict has:
         {
@@ -56,11 +61,12 @@ def get_top_n_nodes_with_max_cpus_and_mem(
     cpu_nodes = get_partition_nodes(cpu_partition)
     gpu_nodes = get_partition_nodes(gpu_partition)
 
-    # 2) CPU-only nodes: in cpu partition but not in gpu partition
-    cpu_only_nodes = cpu_nodes - gpu_nodes
+    # A GPU request deliberately queries the GPU partition itself. CPU jobs keep
+    # the old strict CPU-only behaviour and exclude nodes shared with GPU.
+    eligible_nodes = gpu_nodes if cpu_partition == gpu_partition else cpu_nodes - gpu_nodes
 
-    if not cpu_only_nodes:
-        raise RuntimeError("No CPU-only nodes found (cpu partition minus gpu partition is empty).")
+    if not eligible_nodes:
+        raise RuntimeError(f"No eligible nodes found in partition '{cpu_partition}'.")
 
     # 3) Query cpu partition for CPU/mem details
     cmd = (
@@ -93,8 +99,7 @@ def get_top_n_nodes_with_max_cpus_and_mem(
             continue
         seen_nodes.add(hostname)
 
-        # Keep only strict CPU-only nodes (no overlap with gpu partition)
-        if hostname not in cpu_only_nodes:
+        if hostname not in eligible_nodes:
             continue
 
         cpus_idle = int(info["cpus_idle"])
@@ -137,6 +142,9 @@ class JobManager:
         max_cpus_per_job: int = 64,
         total_cpu_limit: int = 2600 - 128,
         fixed_mem_gb: Optional[int] = None,
+        gpus_per_job: int = 0,
+        mail_user: Optional[str] = None,
+        mail_type: str = "END,FAIL",
         env_vars: Optional[Dict[str, str]] = None,
     ):
         """
@@ -154,13 +162,17 @@ class JobManager:
         self.partition = partition
         self.max_cpus_per_job = max_cpus_per_job
         self.fixed_mem_gb = fixed_mem_gb
+        self.gpus_per_job = max(0, int(gpus_per_job))
+        self.mail_user = mail_user
+        self.mail_type = mail_type
         self.env_vars = env_vars or {}
 
-        # CPU-only nodes: in cpu partition but not in gpu partition
+        # For GPU jobs, query the GPU partition directly. CPU jobs continue to
+        # exclude nodes that also belong to the GPU partition.
         self.free_resources = get_top_n_nodes_with_max_cpus_and_mem(
             n=num_jobs,
             cpu_partition=self.partition,
-            gpu_partition="gpu",
+            gpu_partition=self.partition if self.gpus_per_job > 0 else "gpu",
         )
 
         self.num_jobs = num_jobs
@@ -197,8 +209,14 @@ class JobManager:
         with open(job_script_name, "w") as script_file:
             script_file.write("#!/bin/bash\n")
             script_file.write(f"#SBATCH --job-name=multi_job_{job_index}\n")
+            script_file.write(f"#SBATCH --chdir={self.parent_path}\n")
             script_file.write(f"#SBATCH --cpus-per-task={cpus_job}\n")
             script_file.write(f"#SBATCH --mem={mem}G\n")
+            if self.gpus_per_job > 0:
+                script_file.write(f"#SBATCH --gres=gpu:{self.gpus_per_job}\n")
+            if self.mail_user:
+                script_file.write(f"#SBATCH --mail-user={self.mail_user}\n")
+                script_file.write(f"#SBATCH --mail-type={self.mail_type}\n")
             script_file.write(
                 f"#SBATCH --output={os.path.join(self.log_data_path, f'%j_job_output_{job_index}.txt')}\n"
             )

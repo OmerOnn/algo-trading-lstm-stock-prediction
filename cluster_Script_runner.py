@@ -12,8 +12,8 @@ import os
 from utils.job_manager import JobManager
 from utils.main_utils import create_or_clear_log_file
 
-# need to change to your root on cluster -> need to clone the project there
-PROJECT_ROOT = ""
+# Clone the repository into this directory on the cluster.
+PROJECT_ROOT = os.path.join(os.path.expanduser("~"), "Algo_Trading_Proj")
 
 RUN_PRESET = "train_all_models"
 
@@ -23,12 +23,16 @@ RUN_PRESET = "train_all_models"
 #   --compare
 
 PRESETS = {
-    "drl_hparam": {
+    "train_all_models": {
         "main_path": os.path.join(PROJECT_ROOT, "train_all_models.py"),
         "args": "--horizons 1,5,10,21,30,126,252,1260,2520 --walk-forward --compare",
         "num_jobs": 1,
         "fixed_mem_gb": 128,
         "max_cpus_per_job": 64,
+        "partition": "gpu",
+        "gpus_per_job": 1,
+        "mail_user": "omeron@post.bgu.ac.il",
+        "mail_type": "END,FAIL",
     },
 }
 
@@ -36,6 +40,11 @@ PRESETS = {
 def main() -> None:
     """Submit the selected preset as a SLURM job."""
     preset = PRESETS[RUN_PRESET]
+    if not os.path.isfile(preset["main_path"]):
+        raise FileNotFoundError(
+            f"Training entrypoint not found: {preset['main_path']}. "
+            f"Clone the repository into {PROJECT_ROOT} first."
+        )
     create_or_clear_log_file()
 
     print(f"[main] preset: {RUN_PRESET}", flush=True)
@@ -45,8 +54,14 @@ def main() -> None:
     manager = JobManager(
         main_path=preset["main_path"],
         num_jobs=int(preset["num_jobs"]),
+        parent_path=PROJECT_ROOT,
+        log_data_path=os.path.join(PROJECT_ROOT, "main_logs"),
         fixed_mem_gb=preset["fixed_mem_gb"],
         max_cpus_per_job=int(preset["max_cpus_per_job"]),
+        partition=str(preset["partition"]),
+        gpus_per_job=int(preset["gpus_per_job"]),
+        mail_user=str(preset["mail_user"]),
+        mail_type=str(preset["mail_type"]),
     )
     manager.args = str(preset["args"])
     manager.create_jobs()
